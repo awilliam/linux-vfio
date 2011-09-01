@@ -3,3 +3,10 @@ menuconfig VFIO
 	depends on IOMMU_API
 	help
 	  If you don't know what to do here, say N.
+
+menuconfig VFIO_PCI
+	bool "VFIO support for PCI devices"
+	depends on VFIO && PCI
+	default y if X86
+	help
+	  If you don't know what to do here, say N.

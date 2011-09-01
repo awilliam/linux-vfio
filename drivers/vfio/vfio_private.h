@@ -79,4 +79,9 @@ struct vfio_group {
 extern int vfio_group_add_dev(struct device *dev, void *data);
 extern void vfio_group_del_dev(struct device *dev);
 
+#ifdef CONFIG_VFIO_PCI
+extern int vfio_pci_init(struct vfio *vfio);
+extern void vfio_pci_cleanup(struct vfio *vfio);
+#endif
+
 #endif /* VFIO_PRIVATE_H */

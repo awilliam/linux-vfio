@@ -834,6 +834,12 @@ static int __init vfio_init(void)
 	if (ret)
 		goto err_cdev;
 
+#ifdef CONFIG_VFIO_PCI
+	ret = vfio_pci_init(&vfio);
+	if (ret)
+		pr_debug(DRIVER_DESC "PCI init failed %d\n", ret);
+#endif
+
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 
 	return 0;
@@ -863,6 +869,10 @@ static void __exit vfio_cleanup(void)
 			vfio_group_del_dev(vdev->dev);
 		}
 	}
+
+#ifdef CONFIG_VFIO_PCI
+	vfio_pci_cleanup(&vfio);
+#endif
 
 	idr_destroy(&vfio.idr);
 	cdev_del(&vfio.cdev);
