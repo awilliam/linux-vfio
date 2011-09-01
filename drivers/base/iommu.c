@@ -17,13 +17,52 @@
  */
 
 #include <linux/bug.h>
+#include <linux/device.h>
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/iommu.h>
+#include <linux/pci.h>
 
 static struct iommu_ops *iommu_ops;
+
+static ssize_t show_iommu_group(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	unsigned int groupid;
+
+	if (iommu_device_group(dev, &groupid))
+		return 0;
+
+	return sprintf(buf, "%u", groupid);
+}
+static DEVICE_ATTR(iommu_group, S_IRUGO, show_iommu_group, NULL);
+
+static int add_iommu_group(struct device *dev, void *unused)
+{
+	unsigned int groupid;
+
+	if (iommu_device_group(dev, &groupid) == 0)
+		return device_create_file(dev, &dev_attr_iommu_group);
+
+	return 0;
+}
+
+static int device_notifier(struct notifier_block *nb,
+			   unsigned long action, void *data)
+{
+	struct device *dev = data;
+
+	if (action == BUS_NOTIFY_ADD_DEVICE)
+		return add_iommu_group(dev, NULL);
+
+	return 0;
+}
+
+static struct notifier_block device_nb = {
+	.notifier_call = device_notifier,
+};
 
 void register_iommu(struct iommu_ops *ops)
 {
@@ -31,6 +70,10 @@ void register_iommu(struct iommu_ops *ops)
 		BUG();
 
 	iommu_ops = ops;
+
+	/* FIXME - non-PCI, really want for_each_bus() */
+	bus_register_notifier(&pci_bus_type, &device_nb);
+	bus_for_each_dev(&pci_bus_type, NULL, NULL, add_iommu_group);
 }
 
 bool iommu_found(void)
@@ -93,6 +136,14 @@ int iommu_domain_has_cap(struct iommu_domain *domain,
 	return iommu_ops->domain_has_cap(domain, cap);
 }
 EXPORT_SYMBOL_GPL(iommu_domain_has_cap);
+
+int iommu_device_group(struct device *dev, unsigned int *groupid)
+{
+	if (iommu_ops->device_group)
+		return iommu_ops->device_group(dev, groupid);
+	return -ENODEV;
+}
+EXPORT_SYMBOL_GPL(iommu_device_group);
 
 int iommu_map(struct iommu_domain *domain, unsigned long iova,
 	      phys_addr_t paddr, int gfp_order, int prot)

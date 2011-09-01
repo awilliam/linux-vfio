@@ -45,6 +45,7 @@ struct iommu_ops {
 				    unsigned long iova);
 	int (*domain_has_cap)(struct iommu_domain *domain,
 			      unsigned long cap);
+	int (*device_group)(struct device *dev, unsigned int *groupid);
 };
 
 #ifdef CONFIG_IOMMU_API
@@ -65,6 +66,7 @@ extern phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain,
 				      unsigned long iova);
 extern int iommu_domain_has_cap(struct iommu_domain *domain,
 				unsigned long cap);
+extern int iommu_device_group(struct device *dev, unsigned int *groupid);
 
 #else /* CONFIG_IOMMU_API */
 
@@ -121,6 +123,10 @@ static inline int domain_has_cap(struct iommu_domain *domain,
 	return 0;
 }
 
+static inline int iommu_device_group(struct device *dev, unsigned int *groupid);
+{
+	return -ENODEV;
+}
 #endif /* CONFIG_IOMMU_API */
 
 #endif /* __LINUX_IOMMU_H */
