@@ -1,0 +1,5 @@
+menuconfig VFIO
+	tristate "Non-Privileged User Space driver"
+	depends on IOMMU_API
+	help
+	  If you don't know what to do here, say N.
