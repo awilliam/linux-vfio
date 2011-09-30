@@ -46,270 +46,416 @@ MODULE_PARM_DESC(allow_unsafe_intrs,
 static struct vfio vfio;
 static const struct file_operations vfio_group_fops;
 
-static inline void vfio_container_reset_read(struct vfio_container *vcontainer)
+static bool __vfio_group_devs_inuse(struct vfio_group *group)
 {
-	kfree(vcontainer->read_buf);
-	vcontainer->read_buf = NULL;
+	struct list_head *pos;
+
+	list_for_each(pos, &group->device_list) {
+		struct vfio_device *device;
+
+		device = list_entry(pos, struct vfio_device, device_next);
+		if (device->refcnt) {
+printk("%s group %u dev %s in use\n", __FUNCTION__, group->groupid, dev_name(device->dev));
+			return true;
+		}
+	}
+printk("%s group %u unused\n", __FUNCTION__, group->groupid);
+	return false;
+}
+
+static bool __vfio_iommu_inuse(struct vfio_iommu *iommu)
+{
+	struct list_head *pos;
+
+	if (iommu->refcnt) {
+printk("%s iommu %p in use refcnt %d\n", __FUNCTION__, iommu, iommu->refcnt);
+		return true;
+	}
+
+	list_for_each(pos, &iommu->group_list) {
+		struct vfio_group *group;
+
+		group = list_entry(pos, struct vfio_group, iommu_next);
+
+		if (group->refcnt) {
+printk("%s iommu %p group %u in use\n", __FUNCTION__, iommu, group->groupid);
+			return true;
+		}
+
+		if (__vfio_group_devs_inuse(group)) {
+printk("%s iommu %p group %u dev(s) in use\n", __FUNCTION__, iommu, group->groupid);
+			return true;
+		}
+	}
+printk("%s iommu %p unused\n", __FUNCTION__, iommu);
+	return false;
+}
+
+static void __vfio_group_set_iommu(struct vfio_group *group,
+				   struct vfio_iommu *iommu)
+{
+	struct list_head *pos;
+
+printk("%s(group %u, iommu %p)\n", __FUNCTION__, group->groupid, iommu);
+	if (group->iommu)
+		list_del(&group->iommu_next);
+	if (iommu)
+		list_add(&group->iommu_next, &iommu->group_list);
+
+	group->iommu = iommu;
+
+	list_for_each(pos, &group->device_list) {
+		struct vfio_device *device;
+
+		device = list_entry(pos, struct vfio_device, device_next);
+		device->iommu = iommu;
+	}
+}
+
+static void __vfio_iommu_detach_dev(struct vfio_iommu *iommu,
+				    struct vfio_device *device)
+{
+	BUG_ON(!iommu->domain && device->attached);
+
+printk("%s(iommu %p, dev %s)\n", __FUNCTION__, iommu, dev_name(device->dev));
+	if (!iommu->domain || !device->attached)
+		return;
+
+	iommu_detach_device(iommu->domain, device->dev);
+	device->attached = false;
+}
+
+static void __vfio_iommu_detach_group(struct vfio_iommu *iommu,
+				      struct vfio_group *group)
+{
+	struct list_head *pos;
+
+printk("%s(iommu %p, group %u)\n", __FUNCTION__, iommu, group->groupid);
+	list_for_each(pos, &group->device_list) {
+		struct vfio_device *device;
+
+		device = list_entry(pos, struct vfio_device, device_next);
+		__vfio_iommu_detach_dev(iommu, device);
+	}
+}
+
+static int __vfio_iommu_attach_dev(struct vfio_iommu *iommu,
+				   struct vfio_device *device)
+{
+	int ret;
+
+	BUG_ON(device->attached);
+
+	if (!iommu || !iommu->domain)
+		return -EINVAL;
+
+	ret = iommu_attach_device(iommu->domain, device->dev);
+	if (!ret)
+		device->attached = true;
+
+printk("%s(iommu %p, dev %s): %d\n", __FUNCTION__, iommu, dev_name(device->dev), ret);
+	return ret;
+}
+
+static int __vfio_iommu_attach_group(struct vfio_iommu *iommu,
+				     struct vfio_group *group)
+{
+	struct list_head *pos;
+
+printk("%s(iommu %p, group %u)\n", __FUNCTION__, iommu, group->groupid);
+	list_for_each(pos, &group->device_list) {
+		struct vfio_device *device;
+		int ret;
+
+		device = list_entry(pos, struct vfio_device, device_next);
+		ret = __vfio_iommu_attach_dev(iommu, device);
+		if (ret) {
+			__vfio_iommu_detach_group(iommu, group);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static bool __vfio_group_viable(struct vfio_iommu *iommu)
+{
+	struct list_head *gpos, *dpos;
+
+	list_for_each(gpos, &iommu->group_list) {
+		struct vfio_group *group;
+		group = list_entry(gpos, struct vfio_group, iommu_next);
+
+		list_for_each(dpos, &group->device_list) {
+			struct vfio_device *device;
+			device = list_entry(dpos,
+					    struct vfio_device, device_next);
+
+			if (!device->dev->driver ||
+			    device->dev->driver->owner != device->ops->owner) {
+printk("%s(iommu %p) dev %s NOT viable\n", __FUNCTION__, iommu, dev_name(device->dev));
+				return false;
+			}
+		}
+	}
+printk("%s(iommu %p) viable\n", __FUNCTION__, iommu);
+	return true;
+}
+
+static void __vfio_close_iommu(struct vfio_iommu *iommu)
+{
+	struct list_head *pos;
+
+	if (!iommu->domain)
+		return;
+
+printk("%s(iommu %p)\n", __FUNCTION__, iommu);
+	list_for_each(pos, &iommu->group_list) {
+		struct vfio_group *group;
+		group = list_entry(pos, struct vfio_group, iommu_next);
+
+		__vfio_iommu_detach_group(iommu, group);
+	}
+	iommu_domain_free(iommu->domain);
+	iommu->domain = NULL;
+	iommu->mm = NULL;
+}
+
+static int __vfio_open_iommu(struct vfio_iommu *iommu)
+{
+	struct list_head *pos;
+	int ret;
+
+printk("%s(iommu %p)\n", __FUNCTION__, iommu);
+	if (!__vfio_group_viable(iommu))
+		return -EBUSY;
+
+	if (iommu->domain)
+		return -EINVAL;
+
+	iommu->domain = iommu_domain_alloc();
+	if (!iommu->domain)
+		return -EFAULT;
+
+	list_for_each(pos, &iommu->group_list) {
+		struct vfio_group *group;
+		group = list_entry(pos, struct vfio_group, iommu_next);
+
+		ret = __vfio_iommu_attach_group(iommu, group);
+		if (ret) {
+			__vfio_close_iommu(iommu);
+			return ret;
+		}
+	}
+
+	if (!allow_unsafe_intrs &&
+	    !iommu_domain_has_cap(iommu->domain, IOMMU_CAP_INTR_REMAP)) {
+		__vfio_close_iommu(iommu);
+		return -EFAULT;
+	}
+
+	iommu->mm = current->mm;
+
+printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
+	return 0;
+}
+
+static int __vfio_try_dissolve_iommu(struct vfio_iommu *iommu)
+{
+	struct list_head *pos, *ppos;
+
+printk("%s(iommu %p)\n", __FUNCTION__, iommu);
+	if (__vfio_iommu_inuse(iommu))
+		return -EBUSY;
+
+	__vfio_close_iommu(iommu);
+
+	list_for_each_safe(pos, ppos, &iommu->group_list) {
+		struct vfio_group *group;
+
+		group = list_entry(pos, struct vfio_group, iommu_next);
+		__vfio_group_set_iommu(group, NULL);
+	}
+
+printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
+
+	kfree(iommu);
+
+	return 0;
 }
 
 int vfio_group_add_dev(struct device *dev, void *data)
 {
 	struct vfio_device_ops *ops = data;
 	struct list_head *pos;
-	struct vfio_group *vgroup = NULL;
-	struct vfio_device *vdev = NULL;
-	unsigned int group;
+	struct vfio_group *group = NULL;
+	struct vfio_device *device = NULL;
+	unsigned int groupid;
 	int ret = 0;
 	bool new_group = false;
 
-	if (iommu_device_group(dev, &group))
-		return 0;
+	if (!ops)
+		return -EINVAL;
 
-	mutex_lock(&vfio.group_lock);
+	if (iommu_device_group(dev, &groupid))
+		return -ENODEV;
+
+printk("Adding %s, group id %u\n", dev_name(dev), groupid);
+
+	mutex_lock(&vfio.lock);
 
 	list_for_each(pos, &vfio.group_list) {
-		vgroup = list_entry(pos, struct vfio_group, next);
-		if (vgroup->group == group)
+		group = list_entry(pos, struct vfio_group, group_next);
+		if (group->groupid == groupid)
 			break;
-		vgroup = NULL;
+		group = NULL;
 	}
 
-	if (!vgroup) {
-		int id;
 
+	if (!group) {
+		int minor;
+
+printk("New group!\n");
 		if (unlikely(idr_pre_get(&vfio.idr, GFP_KERNEL) == 0)) {
 			ret = -ENOMEM;
 			goto out;
 		}
-		vgroup = kzalloc(sizeof(*vgroup), GFP_KERNEL);
-		if (!vgroup) {
+
+		group = kzalloc(sizeof(*group), GFP_KERNEL);
+		if (!group) {
 			ret = -ENOMEM;
 			goto out;
 		}
 
-		vgroup->group = group;
-		INIT_LIST_HEAD(&vgroup->device_list);
+		group->groupid = groupid;
+		INIT_LIST_HEAD(&group->device_list);
 
-		ret = idr_get_new(&vfio.idr, vgroup, &id);
-		if (ret == 0 && id > MINORMASK) {
-			idr_remove(&vfio.idr, id);
-			kfree(vgroup);
+		ret = idr_get_new(&vfio.idr, group, &minor);
+		if (ret == 0 && minor > MINORMASK) {
+			idr_remove(&vfio.idr, minor);
+			kfree(group);
 			ret = -ENOSPC;
 			goto out;
 		}
 
-		vgroup->devt = MKDEV(MAJOR(vfio.devt), id);
-		list_add(&vgroup->next, &vfio.group_list);
-		device_create(vfio.class, NULL, vgroup->devt,
-			      vgroup, "%u", group);
+printk("Minor %d\n", minor);
+		group->devt = MKDEV(MAJOR(vfio.devt), minor);
+		device_create(vfio.class, NULL, group->devt,
+			      group, "%u", groupid);
 
+		list_add(&group->group_next, &vfio.group_list);
 		new_group = true;
 	} else {
-		list_for_each(pos, &vgroup->device_list) {
-			vdev = list_entry(pos, struct vfio_device, next);
-			if (vdev->dev == dev)
+		list_for_each(pos, &group->device_list) {
+			device = list_entry(pos,
+					    struct vfio_device, device_next);
+			if (device->dev == dev)
 				break;
-			vdev = NULL;
+			device = NULL;
 		}
 	}
 
-	if (!vdev) {
-		/* Adding a device for a group that's already in use? */
-		/* Maybe we should attach to the domain so others can't */
-		BUG_ON(vgroup->container &&
-		       vgroup->container->iommu &&
-		       vgroup->container->iommu->refcnt);
+	if (!device) {
+		if (__vfio_group_devs_inuse(group) ||
+		    (group->iommu && group->iommu->refcnt)) {
+			printk(KERN_WARNING
+			       "Adding device %s to group %u while group is already in use!!\n",
+			       dev_name(dev), group->groupid);
+		}
 
-		vdev = ops->new(dev);
-		if (IS_ERR(vdev)) {
-			/* If we just created this vgroup, tear it down */
+		device = ops->alloc(dev);
+		if (IS_ERR(device)) {
+			/* If we just created this group, tear it down */
 			if (new_group) {
-				device_destroy(vfio.class, vgroup->devt);
-				idr_remove(&vfio.idr, MINOR(vgroup->devt));
-				list_del(&vgroup->next);
-				kfree(vgroup);
+				list_del(&group->group_next);
+				device_destroy(vfio.class, group->devt);
+				idr_remove(&vfio.idr, MINOR(group->devt));
+				kfree(group);
 			}
-			ret = PTR_ERR(vdev);
+			ret = PTR_ERR(device);
 			goto out;
 		}
-		list_add(&vdev->next, &vgroup->device_list);
-		vdev->dev = dev;
-		vdev->ops = ops;
-		vdev->vfio = &vfio;
+
+		list_add(&device->device_next, &group->device_list);
+		device->dev = dev;
+		device->ops = ops;
+		device->iommu = group->iommu;
+		__vfio_iommu_attach_dev(group->iommu, device);
 	}
 out:
-	mutex_unlock(&vfio.group_lock);
+	mutex_unlock(&vfio.lock);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(vfio_group_add_dev);
 
 void vfio_group_del_dev(struct device *dev)
 {
 	struct list_head *pos;
-	struct vfio_container *vcontainer;
-	struct vfio_group *vgroup = NULL;
-	struct vfio_device *vdev = NULL;
-	unsigned int group;
+	struct vfio_group *group = NULL;
+	struct vfio_device *device = NULL;
+	unsigned int groupid;
 
-	if (iommu_device_group(dev, &group))
+	if (iommu_device_group(dev, &groupid))
 		return;
 
-	mutex_lock(&vfio.group_lock);
+printk("Removing %s, group id %u\n", dev_name(dev), groupid);
+
+	mutex_lock(&vfio.lock);
 
 	list_for_each(pos, &vfio.group_list) {
-		vgroup = list_entry(pos, struct vfio_group, next);
-		if (vgroup->group == group)
+		group = list_entry(pos, struct vfio_group, group_next);
+		if (group->groupid == groupid)
 			break;
-		vgroup = NULL;
+		group = NULL;
 	}
 
-	if (!vgroup)
+	if (!group)
 		goto out;
 
-	vcontainer = vgroup->container;
-
-	list_for_each(pos, &vgroup->device_list) {
-		vdev = list_entry(pos, struct vfio_device, next);
-		if (vdev->dev == dev)
+	list_for_each(pos, &group->device_list) {
+		device = list_entry(pos, struct vfio_device, device_next);
+		if (device->dev == dev)
 			break;
-		vdev = NULL;
+		device = NULL;
 	}
 
-	if (!vdev)
+	if (!device)
 		goto out;
 
-	/* XXX Did a device we're using go away? */
-	BUG_ON(vdev->refcnt);
+	BUG_ON(device->refcnt);
 
-	if (vcontainer && vcontainer->iommu) {
-		iommu_detach_device(vcontainer->iommu->domain, vdev->dev);
-		vfio_container_reset_read(vcontainer);
-	}
+	if (device->attached)
+		__vfio_iommu_detach_dev(group->iommu, device);
 
-	list_del(&vdev->next);
-	vdev->ops->free(vdev);
+	list_del(&device->device_next);
+	device->ops->free(device);
 
-	if (list_empty(&vgroup->device_list) && vgroup->refcnt == 0) {
-		device_destroy(vfio.class, vgroup->devt);
-		idr_remove(&vfio.idr, MINOR(vgroup->devt));
-		list_del(&vgroup->next);
-		kfree(vgroup);
+	if (list_empty(&group->device_list) && group->refcnt == 0) {
+		struct vfio_iommu *iommu = group->iommu;
+
+		if (iommu) {
+			__vfio_group_set_iommu(group, NULL);
+			__vfio_try_dissolve_iommu(iommu);
+		}
+
+		device_destroy(vfio.class, group->devt);
+		idr_remove(&vfio.idr, MINOR(group->devt));
+		list_del(&group->group_next);
+		kfree(group);
 	}
 out:
-	mutex_unlock(&vfio.group_lock);
+	mutex_unlock(&vfio.lock);
 }
+EXPORT_SYMBOL_GPL(vfio_group_del_dev);
 
-static bool __vfio_group_viable(struct vfio_container *vcontainer)
+static int vfio_group_merge(struct vfio_group *group, int fd)
 {
-	struct list_head *gpos, *dpos;
-
-	list_for_each(gpos, &vfio.group_list) {
-		struct vfio_group *vgroup;
-		vgroup = list_entry(gpos, struct vfio_group, next);
-		if (vgroup->container != vcontainer)
-			continue;
-
-		list_for_each(dpos, &vgroup->device_list) {
-			struct vfio_device *vdev;
-			vdev = list_entry(dpos, struct vfio_device, next);
-
-			if (!vdev->dev->driver ||
-			    vdev->dev->driver->owner != THIS_MODULE)
-				return false;
-		}
-	}
-	return true;
-}
-
-static int __vfio_close_iommu(struct vfio_container *vcontainer)
-{
-	struct list_head *gpos, *dpos;
-	struct vfio_iommu *viommu = vcontainer->iommu;
-	struct vfio_group *vgroup;
-	struct vfio_device *vdev;
-
-	if (!viommu)
-		return 0;
-
-	if (viommu->refcnt)
-		return -EBUSY;
-
-	list_for_each(gpos, &vfio.group_list) {
-		vgroup = list_entry(gpos, struct vfio_group, next);
-		if (vgroup->container != vcontainer)
-			continue;
-
-		list_for_each(dpos, &vgroup->device_list) {
-			vdev = list_entry(dpos, struct vfio_device, next);
-			iommu_detach_device(viommu->domain, vdev->dev);
-			vdev->iommu = NULL;
-		}
-	}
-	iommu_domain_free(viommu->domain);
-	kfree(viommu);
-	vcontainer->iommu = NULL;
-	return 0;
-}
-
-static int __vfio_open_iommu(struct vfio_container *vcontainer)
-{
-	struct list_head *gpos, *dpos;
-	struct vfio_iommu *viommu;
-	struct vfio_group *vgroup;
-	struct vfio_device *vdev;
-
-	if (!__vfio_group_viable(vcontainer))
-		return -EBUSY;
-
-	viommu = kzalloc(sizeof(*viommu), GFP_KERNEL);
-	if (!viommu)
-		return -ENOMEM;
-
-	viommu->domain = iommu_domain_alloc();
-	if (!viommu->domain) {
-		kfree(viommu);
-		return -EFAULT;
-	}
-
-	viommu->vfio = &vfio;
-	vcontainer->iommu = viommu;
-
-	list_for_each(gpos, &vfio.group_list) {
-		vgroup = list_entry(gpos, struct vfio_group, next);
-		if (vgroup->container != vcontainer)
-			continue;
-
-		list_for_each(dpos, &vgroup->device_list) {
-			int ret;
-
-			vdev = list_entry(dpos, struct vfio_device, next);
-
-			ret = iommu_attach_device(viommu->domain, vdev->dev);
-			if (ret) {
-				__vfio_close_iommu(vcontainer);
-				return ret;
-			}
-			vdev->iommu = viommu;
-		}
-	}
-
-	if (!allow_unsafe_intrs &&
-	    !iommu_domain_has_cap(viommu->domain, IOMMU_CAP_INTR_REMAP)) {
-		__vfio_close_iommu(vcontainer);
-		return -EFAULT;
-	}
-
-	return 0;
-}
-
-static int vfio_group_merge(struct vfio_group *vgroup, int fd)
-{
-	struct vfio_group *vgroup2;
-	struct iommu_domain *domain;
-	struct list_head *pos;
+	struct vfio_group *new;
+	struct vfio_iommu *old_iommu;
 	struct file *file;
 	int ret = 0;
+	bool opened = false;
 
-	mutex_lock(&vfio.group_lock);
+	mutex_lock(&vfio.lock);
 
 	file = fget(fd);
 	if (!file) {
@@ -321,90 +467,75 @@ static int vfio_group_merge(struct vfio_group *vgroup, int fd)
 		goto out;
 	}
 
-	vgroup2 = file->private_data;
-	if (!vgroup2 || vgroup2 == vgroup || vgroup2->mm != vgroup->mm ||
-	    (vgroup2->container->iommu && vgroup2->container->iommu->refcnt)) {
+	new = file->private_data;
+
+	if (!new || new == group || !new->iommu || new->iommu->domain ||
+            (group->iommu->mm && group->iommu->mm != current->mm)) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	if (!vgroup->container->iommu) {
-		ret = __vfio_open_iommu(vgroup->container);
+printk("merging group id %u & %u\n", group->groupid, new->groupid);
+	/*
+	 * We need to attach all the devices to each domain separately
+	 * in order to validate that the capabilities match for both.
+	 */
+	ret = __vfio_open_iommu(new->iommu);
+	if (ret)
+		goto out;
+
+	if (!group->iommu->domain) {
+		ret = __vfio_open_iommu(group->iommu);
 		if (ret)
 			goto out;
+		opened = true;
 	}
 
-	if (!vgroup2->container->iommu) {
-		ret = __vfio_open_iommu(vgroup2->container);
-		if (ret)
-			goto out;
-	}
-
-	if (iommu_domain_has_cap(vgroup->container->iommu->domain,
+	if (iommu_domain_has_cap(group->iommu->domain,
 				 IOMMU_CAP_CACHE_COHERENCY) !=
-	    iommu_domain_has_cap(vgroup2->container->iommu->domain,
+	    iommu_domain_has_cap(new->iommu->domain,
 				 IOMMU_CAP_CACHE_COHERENCY)) {
+		__vfio_close_iommu(new->iommu);
+		if (opened)
+			__vfio_close_iommu(group->iommu);
 		ret = -EINVAL;
 		goto out;
 	}
 
-	ret = __vfio_close_iommu(vgroup2->container);
+	__vfio_close_iommu(new->iommu);
+
+	ret = __vfio_iommu_attach_group(group->iommu, new);
 	if (ret)
 		goto out;
 
-	domain = vgroup->container->iommu->domain;
-
-	list_for_each(pos, &vgroup2->device_list) {
-		struct vfio_device *vdev;
-
-		vdev = list_entry(pos, struct vfio_device, next);
-
-		ret = iommu_attach_device(domain, vdev->dev);
-		if (ret) {
-			list_for_each(pos, &vgroup2->device_list) {
-				struct vfio_device *vdev2;
-
-				vdev2 = list_entry(pos,
-						   struct vfio_device, next);
-				if (vdev2 == vdev)
-					break;
-
-				iommu_detach_device(domain, vdev2->dev);
-				vdev2->iommu = NULL;
-			}
-			goto out;
-		}
-		vdev->iommu = vgroup->container->iommu;
-	}
-
-	kfree(vgroup2->container->read_buf);
-	kfree(vgroup2->container);
-
-	vgroup2->container = vgroup->container;
-	vgroup->container->refcnt++;
-	vfio_container_reset_read(vgroup->container);
+	old_iommu = new->iommu;
+	__vfio_group_set_iommu(new, group->iommu);
+	BUG_ON(!list_empty(&old_iommu->group_list));
+	kfree(old_iommu);
 
 out:
+	if (ret)
+printk("Merged failed %d\n", ret);
 	fput(file);
 out_noput:
-	mutex_unlock(&vfio.group_lock);
+	mutex_unlock(&vfio.lock);
 	return ret;
 }
 
-static int vfio_group_unmerge(struct vfio_group *vgroup, int fd)
+static int vfio_group_unmerge(struct vfio_group *group, int fd)
 {
-	struct vfio_group *vgroup2;
-	struct vfio_container *vcontainer2;
-	struct vfio_device *vdev;
-	struct list_head *pos;
+	struct vfio_group *new;
+	struct vfio_iommu *new_iommu;
 	struct file *file;
 	int ret = 0;
 
-	vcontainer2 = kzalloc(sizeof(*vcontainer2), GFP_KERNEL);
-	if (!vcontainer2)
+	new_iommu = kzalloc(sizeof(*new_iommu), GFP_KERNEL);
+	if (!new_iommu)
 		return -ENOMEM;
 
-	mutex_lock(&vfio.group_lock);
+	INIT_LIST_HEAD(&new_iommu->group_list);
+
+	mutex_lock(&vfio.lock);
 
 	file = fget(fd);
 	if (!file) {
@@ -416,141 +547,135 @@ static int vfio_group_unmerge(struct vfio_group *vgroup, int fd)
 		goto out;
 	}
 
-	vgroup2 = file->private_data;
-	if (!vgroup2 || vgroup2 == vgroup ||
-	    vgroup2->container != vgroup->container) {
+	new = file->private_data;
+	if (!new || new == group || new->iommu != group->iommu) {
 		ret = -EINVAL;
 		goto out;
 	}
 
-	list_for_each(pos, &vgroup2->device_list) {
-		vdev = list_entry(pos, struct vfio_device, next);
-		if (vdev->refcnt) {
-			ret = -EBUSY;
-			goto out;
-		}
+printk("unmerging group id %u & %u\n", group->groupid, new->groupid);
+	if (__vfio_group_devs_inuse(new)) {
+		ret = -EBUSY;
+		goto out;
 	}
 
-	list_for_each(pos, &vgroup2->device_list) {
-		vdev = list_entry(pos, struct vfio_device, next);
-		iommu_detach_device(vgroup->container->iommu->domain,
-				    vdev->dev);
-		vdev->iommu = NULL;
-	}
+	__vfio_iommu_detach_group(group->iommu, new);
+	__vfio_group_set_iommu(new, new_iommu);
 
-	vgroup2->container = vcontainer2;
-	vcontainer2->refcnt++;
-	vgroup->container->refcnt--;
-	vfio_container_reset_read(vgroup->container);
 out:
+	if (ret)
+printk("Unmerged failed %d\n", ret);
 	fput(file);
 out_noput:
 	if (ret)
-		kfree(vcontainer2);
-	mutex_unlock(&vfio.group_lock);
+		kfree(new_iommu);
+	mutex_unlock(&vfio.lock);
 	return ret;
 }
 
-static int vfio_group_get_iommu_fd(struct vfio_group *vgroup)
+static int vfio_group_get_iommu_fd(struct vfio_group *group)
 {
 	int ret = 0;
-	struct vfio_iommu *viommu;
 
-	mutex_lock(&vfio.group_lock);
+	mutex_lock(&vfio.lock);
 
-	if (!vgroup->container->iommu) {
-		ret = __vfio_open_iommu(vgroup->container);
+printk("%s\n", __FUNCTION__);
+	if (!group->iommu->domain) {
+		ret = __vfio_open_iommu(group->iommu);
 		if (ret)
 			goto out;
 	}
 
-	viommu = vgroup->container->iommu;
-
-	if (!viommu->file) {
-		viommu->file = anon_inode_getfile("vfio-iommu",
-						  &vfio_iommu_fops,
-						  viommu, O_RDWR);
-		if (IS_ERR(viommu->file)) {
-			ret = PTR_ERR(viommu->file);
-			viommu->file = NULL;
+	if (!group->iommu->file) {
+		group->iommu->file = anon_inode_getfile("vfio-iommu",
+							&vfio_iommu_fops,
+							group->iommu, O_RDWR);
+		if (IS_ERR(group->iommu->file)) {
+			ret = PTR_ERR(group->iommu->file);
+			group->iommu->file = NULL;
 			goto out;
 		}
 	}
+
 	ret = get_unused_fd();
 	if (ret < 0)
 		goto out;
 
-	fd_install(ret, viommu->file);
+	fd_install(ret, group->iommu->file);
 
-	vgroup->container->iommu->refcnt++;
+	group->iommu->refcnt++;
 out:
-	mutex_unlock(&vfio.group_lock);
+	mutex_unlock(&vfio.lock);
 	return ret;
 }
 
-static int vfio_group_get_device_fd(struct vfio_group *vgroup, char *buf)
+static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 {
-	struct vfio_container *vcontainer = vgroup->container;
-	struct list_head *gpos, *dpos;
+	struct vfio_iommu *iommu = group->iommu;
+	struct list_head *gpos;
 	int ret = -ENODEV;
 
-	mutex_lock(&vfio.group_lock);
-
-	if (!vcontainer->iommu) {
-		ret = __vfio_open_iommu(vcontainer);
+	mutex_lock(&vfio.lock);
+printk("%s\n", __FUNCTION__);
+	if (!iommu->domain) {
+		ret = __vfio_open_iommu(iommu);
 		if (ret)
 			goto out;
 	}
 
-	list_for_each(gpos, &vfio.group_list) {
-		vgroup = list_entry(gpos, struct vfio_group, next);
-		if (vgroup->container != vcontainer)
-			continue;
+	list_for_each(gpos, &iommu->group_list) {
+		struct list_head *dpos;
 
-		list_for_each(dpos, &vgroup->device_list) {
-			struct vfio_device *vdev;
-			char buf2[MAX_PATH];
+		group = list_entry(gpos, struct vfio_group, iommu_next);
 
-			vdev = list_entry(dpos, struct vfio_device, next);
+		list_for_each(dpos, &group->device_list) {
+			struct vfio_device *device;
 
-			snprintf(buf2, MAX_PATH, "%s", dev_name(vdev->dev));
+			device = list_entry(dpos,
+					  struct vfio_device, device_next);
 
-			if (!strncmp(buf, buf2, MAX_PATH)) {
-				if (!vdev->file) {
-					vdev->file = anon_inode_getfile(
+			if (device->ops->match(device, buf)) {
+				if (!device->ops->get(device)) {
+					ret = -EFAULT;
+					goto out;
+				}
+
+				if (!device->file) {
+					struct file *file;
+
+					file = anon_inode_getfile(
 							"vfio-device",
 							&vfio_device_fops,
-							vdev, O_RDWR);
-					if (IS_ERR(vdev->file)) {
-						ret = PTR_ERR(vdev->file);
-						vdev->file = NULL;
+							device, O_RDWR);
+					if (IS_ERR(file)) {
+						device->ops->put(device);
+						ret = PTR_ERR(file);
 						goto out;
 					}
+					device->file = file;
 				}
 				ret = get_unused_fd();
-				if (ret < 0)
+				if (ret < 0) {
+					device->ops->put(device);
 					goto out;
+				}
 
-				fd_install(ret, vdev->file);
+				fd_install(ret, device->file);
 
-				vdev->refcnt++;
-				vcontainer->iommu->refcnt++;
+				device->refcnt++;
 				goto out;
 			}
 		}
 	}
 out:
-	mutex_unlock(&vfio.group_lock);
+	mutex_unlock(&vfio.lock);
 	return ret;
 }
 
 static long vfio_group_unl_ioctl(struct file *filep,
 				 unsigned int cmd, unsigned long arg)
 {
-	struct vfio_group *vgroup = filep->private_data;
-
-	if (vgroup->mm != current->mm)
-		return -EIO;
+	struct vfio_group *group = filep->private_data;
 
 	switch (cmd) {
 	case VFIO_GROUP_MERGE:
@@ -564,12 +689,12 @@ static long vfio_group_unl_ioctl(struct file *filep,
 				return -EINVAL;
 
 			if (cmd == VFIO_GROUP_MERGE)
-				return vfio_group_merge(vgroup, fd);
+				return vfio_group_merge(group, fd);
 			else
-				return vfio_group_unmerge(vgroup, fd);
+				return vfio_group_unmerge(group, fd);
 		}
 	case VFIO_GROUP_GET_IOMMU_FD:
-		return vfio_group_get_iommu_fd(vgroup);
+		return vfio_group_get_iommu_fd(group);
 	case VFIO_GROUP_GET_DEVICE_FD:
 		{
 			char *buf;
@@ -579,7 +704,7 @@ static long vfio_group_unl_ioctl(struct file *filep,
 			if (IS_ERR(buf))
 				return PTR_ERR(buf);
 
-			ret = vfio_group_get_device_fd(vgroup, buf);
+			ret = vfio_group_get_device_fd(group, buf);
 			kfree(buf);
 			return ret;
 		}
@@ -599,198 +724,90 @@ static long vfio_group_compat_ioctl(struct file *filep,
 
 static int vfio_group_open(struct inode *inode, struct file *filep)
 {
-	struct vfio_group *vgroup;
+	struct vfio_group *group;
 	int ret = 0;
 
-	mutex_lock(&vfio.group_lock);
+	mutex_lock(&vfio.lock);
 
-	vgroup = idr_find(&vfio.idr, iminor(inode));
+printk("%s\n", __FUNCTION__);
+	group = idr_find(&vfio.idr, iminor(inode));
 
-	if (!vgroup) {
+	if (!group) {
 		ret = -ENODEV;
 		goto out;
 	}
 
-	if (!vgroup->refcnt) {
-		struct vfio_container *vcontainer;
-		vcontainer = kzalloc(sizeof(*vcontainer), GFP_KERNEL);
-		if (!vcontainer) {
+	filep->private_data = group;
+
+	if (!group->iommu) {
+		struct vfio_iommu *iommu;
+
+		iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
+		if (!iommu) {
 			ret = -ENOMEM;
 			goto out;
 		}
-		vgroup->container = vcontainer;
-		vgroup->mm = current->mm;
-	} else if (current->mm != vgroup->mm) {
-		ret = -EBUSY;
-		goto out;
+		INIT_LIST_HEAD(&iommu->group_list);
+		__vfio_group_set_iommu(group, iommu);
 	}
-	filep->private_data = vgroup;
-	vgroup->refcnt++;
-	vgroup->container->refcnt++;
-out:
-	mutex_unlock(&vfio.group_lock);
+	group->refcnt++;
 
+	mutex_unlock(&vfio.lock);
+
+out:
 	return ret;
 }
 
 static int vfio_group_release(struct inode *inode, struct file *filep)
 {
-	struct vfio_group *vgroup = filep->private_data;
-	struct vfio_container *vcontainer = vgroup->container;
-	struct list_head *pos;
-	int ret = 0;
+	struct vfio_group *group = filep->private_data;
 
-	mutex_lock(&vfio.group_lock);
+	mutex_lock(&vfio.lock);
 
-	if (vgroup->refcnt > 1) {
-		vgroup->refcnt--;
-		vcontainer->refcnt--;
-		goto out;
-	}
+printk("%s\n", __FUNCTION__);
+	group->refcnt--;
 
-	list_for_each(pos, &vgroup->device_list) {
-		struct vfio_device *vdev;
-		vdev = list_entry(pos, struct vfio_device, next);
-		if (vdev->refcnt) {
-			ret = -EBUSY;
-			goto out;
-		}
-	}
+	__vfio_try_dissolve_iommu(group->iommu);
 
-	/* Merged group? */
-	if (vcontainer->refcnt > 1) {
-		if (vcontainer->iommu) {
-			list_for_each(pos, &vgroup->device_list) {
-				struct vfio_device *vdev;
-				vdev = list_entry(pos,
-						  struct vfio_device, next);
-				iommu_detach_device(vcontainer->iommu->domain,
-						    vdev->dev);
-				vdev->iommu = NULL;
-			}
-		}
-		vcontainer->refcnt--;
-		vfio_container_reset_read(vcontainer);
-	} else {
-		if (vcontainer->iommu && vcontainer->iommu->refcnt) {
-			ret = -EBUSY;
-			goto out;
-		}
+	mutex_unlock(&vfio.lock);
 
-		ret = __vfio_close_iommu(vcontainer);
-		if (ret)
-			goto out;
-
-		kfree(vcontainer->read_buf);
-		kfree(vcontainer);
-	}
-
-	vgroup->refcnt--;
-	vgroup->mm = NULL;
-	vgroup->container = NULL;
-
-	/* Possible we had the group open while device members were removed */
-	if (list_empty(&vgroup->device_list)) {
-		device_destroy(vfio.class, vgroup->devt);
-		idr_remove(&vfio.idr, MINOR(vgroup->devt));
-		list_del(&vgroup->next);
-		kfree(vgroup);
-	}
-out:
-	mutex_unlock(&vfio.group_lock);
 	return 0;
 }
 
-static int __vfio_container_create_read_buf(struct vfio_container *vcontainer)
+int vfio_release_device(struct vfio_device *device)
 {
-	struct list_head *gpos, *dpos;
-	struct vfio_group *vgroup;
-	struct vfio_device *vdev;
-	int off = 0;
-	char *buf;
+	mutex_lock(&vfio.lock);
 
-	buf = kzalloc(MAX_PATH, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
+printk("%s\n", __FUNCTION__);
+	device->refcnt--;
+	__vfio_try_dissolve_iommu(device->iommu);
 
-	list_for_each(gpos, &vfio.group_list) {
-		vgroup = list_entry(gpos, struct vfio_group, next);
-		if (vgroup->container != vcontainer)
-			continue;
+	// XXX put file?
 
-		off += snprintf(buf + off, MAX_PATH,
-				"group: %u\n", vgroup->group);
-		buf = krealloc(buf, off + MAX_PATH, GFP_KERNEL);
-		if (!buf)
-			return -ENOMEM;
-		memset(buf + off, 0, MAX_PATH);
+	mutex_unlock(&vfio.lock);
 
-		list_for_each(dpos, &vgroup->device_list) {
-			vdev = list_entry(dpos, struct vfio_device, next);
-
-			off += snprintf(buf + off, MAX_PATH,
-					"device: %s\n", dev_name(vdev->dev));
-			buf = krealloc(buf, off + MAX_PATH, GFP_KERNEL);
-			if (!buf)
-				return -ENOMEM;
-			memset(buf + off, 0, MAX_PATH);
-		}
-	}
-	buf = krealloc(buf, off + 1, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	vcontainer->read_buf = buf;
 	return 0;
 }
 
-static ssize_t vfio_group_read(struct file *filep, char __user *buf,
-			       size_t count, loff_t *ppos)
+int vfio_release_iommu(struct vfio_iommu *iommu)
 {
-	struct vfio_group *vgroup = filep->private_data;
-	struct vfio_container *vcontainer;
-	ssize_t ret = 0;
+	mutex_lock(&vfio.lock);
 
-	mutex_lock(&vfio.group_lock);
+printk("%s\n", __FUNCTION__);
+	iommu->refcnt--;
+	__vfio_try_dissolve_iommu(iommu);
 
-	vcontainer = vgroup->container;
+	// XXX put file?
 
-	if (!vcontainer) {
-		ret = -EINVAL;
-		goto out;
-	}
+	mutex_unlock(&vfio.lock);
 
-	if (!vcontainer->read_buf) {
-		ret = __vfio_container_create_read_buf(vcontainer);
-		if (ret)
-			goto out;
-	}
-
-	if (*ppos >= strlen(vcontainer->read_buf) + 1) {
-		ret = 0;
-		goto out;
-	}
-
-	if (*ppos + count > strlen(vcontainer->read_buf) + 1)
-		count = strlen(vcontainer->read_buf) + 1 - *ppos;
-
-	if (copy_to_user(buf, vcontainer->read_buf + *ppos, count)) {
-		ret = -EFAULT;
-		goto out;
-	}
-
-	*ppos += count;
-	ret = count;
-out:
-	mutex_unlock(&vfio.group_lock);
-	return ret;
+	return 0;
 }
 
 static const struct file_operations vfio_group_fops = {
 	.owner		= THIS_MODULE,
 	.open		= vfio_group_open,
 	.release	= vfio_group_release,
-	.read		= vfio_group_read,
 	.unlocked_ioctl	= vfio_group_unl_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= vfio_group_compat_ioctl,
@@ -813,7 +830,7 @@ static int __init vfio_init(void)
 	int ret;
 
 	idr_init(&vfio.idr);
-	mutex_init(&vfio.group_lock);
+	mutex_init(&vfio.lock);
 	INIT_LIST_HEAD(&vfio.group_list);
 
 	kref_init(&vfio.kref);
@@ -835,12 +852,6 @@ static int __init vfio_init(void)
 	if (ret)
 		goto err_cdev;
 
-#ifdef CONFIG_VFIO_PCI
-	ret = vfio_pci_init(&vfio);
-	if (ret)
-		pr_debug(DRIVER_DESC "PCI init failed %d\n", ret);
-#endif
-
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 
 	return 0;
@@ -857,23 +868,21 @@ static void __exit vfio_cleanup(void)
 {
 	struct list_head *gpos, *gppos;
 
+printk("%s\n", __FUNCTION__);
 	list_for_each_safe(gpos, gppos, &vfio.group_list) {
-		struct vfio_group *vgroup;
+		struct vfio_group *group;
 		struct list_head *dpos, *dppos;
 
-		vgroup = list_entry(gpos, struct vfio_group, next);
+		group = list_entry(gpos, struct vfio_group, group_next);
 
-		list_for_each_safe(dpos, dppos, &vgroup->device_list) {
-			struct vfio_device *vdev;
+		list_for_each_safe(dpos, dppos, &group->device_list) {
+			struct vfio_device *device;
 
-			vdev = list_entry(dpos, struct vfio_device, next);
-			vfio_group_del_dev(vdev->dev);
+			device = list_entry(dpos,
+					    struct vfio_device, device_next);
+			vfio_group_del_dev(device->dev);
 		}
 	}
-
-#ifdef CONFIG_VFIO_PCI
-	vfio_pci_cleanup(&vfio);
-#endif
 
 	idr_destroy(&vfio.idr);
 	cdev_del(&vfio.cdev);

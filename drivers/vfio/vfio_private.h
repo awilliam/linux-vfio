@@ -31,57 +31,62 @@ struct vfio {
 	dev_t			devt;
 	struct cdev		cdev;
 	struct list_head	group_list;
-	struct mutex		group_lock;
+	struct mutex		lock;
 	struct kref		kref;
 	struct class		*class;
 	struct idr		idr;
 };
 
 struct vfio_device_ops {
-	struct vfio_device	*(* new)(struct device *);
+	struct vfio_device	*(* alloc)(struct device *);
 	void			(* free)(struct vfio_device *);
-	struct file_operations	fops;
-};
-
-struct vfio_iommu {
-	struct iommu_domain	*domain;
-	struct vfio		*vfio;
-	int			refcnt;
-	struct file		*file;
+	bool			(*match)(struct vfio_device *, char *);
+	int			(*get)(struct vfio_device *);
+	void			(*put)(struct vfio_device *);
+        ssize_t			(*read)(struct vfio_device *,
+					char __user *, size_t, loff_t *);
+        ssize_t			(*write)(struct vfio_device *,
+					 const char __user *, size_t, loff_t *);
+        long			(*ioctl)(struct vfio_device *,
+					 unsigned int, unsigned long);
+	int			(*mmap)(struct vfio_device *,
+					struct vm_area_struct *);
+	struct module		*owner;
 };
 
 struct vfio_device {
 	struct device		*dev;
-	struct list_head	next;
 	struct file		*file;
 	struct vfio_device_ops	*ops;
-	struct vfio		*vfio;
 	struct vfio_iommu	*iommu;
+	struct vfio_group	*group;
+	struct list_head	device_next;
+	bool			attached;
 	int			refcnt;
 };
 
-struct vfio_container {
-	struct vfio_iommu	*iommu;
-	char			*read_buf;
+struct vfio_iommu {
+	struct iommu_domain	*domain;
+	struct file		*file;
+	struct mm_struct	*mm;
+	struct list_head	group_list;
 	int			refcnt;
 };
-
+	
 struct vfio_group {
 	dev_t			devt;
-	unsigned int		group;
-	int			refcnt;
-	struct mm_struct	*mm;
-	struct vfio_container	*container;
+	unsigned int		groupid;
+	struct vfio_iommu	*iommu;
 	struct list_head	device_list;
-	struct list_head	next;
+	struct list_head	iommu_next;
+	struct list_head	group_next;
+	int			refcnt;
 };
 
-extern int vfio_group_add_dev(struct device *dev, void *data);
-extern void vfio_group_del_dev(struct device *dev);
+extern int vfio_group_add_dev(struct device *device, void *data);
+extern void vfio_group_del_dev(struct device *device);
 
-#ifdef CONFIG_VFIO_PCI
-extern int vfio_pci_init(struct vfio *vfio);
-extern void vfio_pci_cleanup(struct vfio *vfio);
-#endif
+extern int vfio_release_device(struct vfio_device *device);
+extern int vfio_release_iommu(struct vfio_iommu *iommu);
 
 #endif /* VFIO_PRIVATE_H */

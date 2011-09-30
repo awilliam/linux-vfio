@@ -27,18 +27,16 @@
 
 static int vfio_iommu_release(struct inode *inode, struct file *filep)
 {
-	struct vfio_iommu *viommu = filep->private_data;
+	struct vfio_iommu *iommu = filep->private_data;
 
-	mutex_lock(&viommu->vfio->group_lock);
-	viommu->refcnt--;
-	mutex_unlock(&viommu->vfio->group_lock);
+	vfio_release_iommu(iommu);
 	return 0;
 }
 
 static long vfio_iommu_unl_ioctl(struct file *filep,
 				 unsigned int cmd, unsigned long arg)
 {
-	struct vfio_iommu *viommu = filep->private_data;
+	struct vfio_iommu *iommu = filep->private_data;
 	struct vfio_dma_map dm;
 	int ret = -ENOSYS;
 

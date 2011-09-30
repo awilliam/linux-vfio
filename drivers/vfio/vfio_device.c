@@ -30,12 +30,12 @@
 
 static int vfio_device_release(struct inode *inode, struct file *filep)
 {
-	struct vfio_device *vdev = filep->private_data;
+	struct vfio_device *device = filep->private_data;
 
-	mutex_lock(&vdev->vfio->group_lock);
-	vdev->refcnt--;
-	vdev->iommu->refcnt--;
-	mutex_unlock(&vdev->vfio->group_lock);
+	if (device->ops->put)
+		device->ops->put(device);
+
+	vfio_release_device(device);
 
 	return 0;
 }
@@ -43,25 +43,21 @@ static int vfio_device_release(struct inode *inode, struct file *filep)
 static long vfio_device_unl_ioctl(struct file *filep,
 				  unsigned int cmd, unsigned long arg)
 {
-	struct vfio_device *vdev = filep->private_data;
-	int ret = -EINVAL;
+	struct vfio_device *device = filep->private_data;
 
-	switch (cmd) {
-	// TBD - what can we handle as common device ioctls?
-	default:
-		if (vdev->ops->fops.unlocked_ioctl)
-			ret = vdev->ops->fops.unlocked_ioctl(filep, cmd, arg);
-	}
-	return ret;
+	if (device->ops->ioctl)
+		return device->ops->ioctl(device, cmd, arg);
+
+	return -ENOSYS;
 }
 
 static ssize_t vfio_device_read(struct file *filep, char __user *buf,
 				size_t count, loff_t *ppos)
 {
-	struct vfio_device *vdev = filep->private_data;
+	struct vfio_device *device = filep->private_data;
 
-	if (vdev->ops->fops.read)
-		return vdev->ops->fops.read(filep, buf, count, ppos);
+	if (device->ops->read)
+		return device->ops->read(device, buf, count, ppos);
 
 	return -EINVAL;
 }
@@ -69,20 +65,20 @@ static ssize_t vfio_device_read(struct file *filep, char __user *buf,
 static ssize_t vfio_device_write(struct file *filep, const char __user *buf,
 				 size_t count, loff_t *ppos)
 {
-	struct vfio_device *vdev = filep->private_data;
+	struct vfio_device *device = filep->private_data;
 
-	if (vdev->ops->fops.write)
-		return vdev->ops->fops.write(filep, buf, count, ppos);
+	if (device->ops->write)
+		return device->ops->write(device, buf, count, ppos);
 
 	return -EINVAL;
 }
 
 static int vfio_device_mmap(struct file *filep, struct vm_area_struct *vma)
 {
-	struct vfio_device *vdev = filep->private_data;
+	struct vfio_device *device = filep->private_data;
 
-	if (vdev->ops->fops.mmap)
-		return vdev->ops->fops.mmap(filep, vma);
+	if (device->ops->mmap)
+		return device->ops->mmap(device, vma);
 
 	return -EINVAL;
 }

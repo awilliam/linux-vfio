@@ -47,6 +47,15 @@ struct iommu *iommu_list = NULL;
 void print_group(unsigned int number)
 {
 	struct group *group = group_list;
+
+	for (; group && group->number != number; group = group->next);
+
+	if (!group)
+		fprintf(stderr, "Group %u not found\n", number);
+	else
+		fprintf(stdout, "---- Group %u (fd %d) ----\n",
+			number, group->fd);
+#if 0
 	char buf[4096];
 	int ret;
 
@@ -66,6 +75,7 @@ void print_group(unsigned int number)
 		fprintf(stdout, "%s", buf);
 		fprintf(stdout, "---- Group %u end ----\n", number);
 	}
+#endif
 }
 
 void print_device(struct device *device)
