@@ -56,7 +56,6 @@ struct vfio_device_ops {
 
 struct vfio_device {
 	struct device		*dev;
-	struct file		*file;
 	struct vfio_device_ops	*ops;
 	struct vfio_iommu	*iommu;
 	struct vfio_group	*group;
@@ -67,7 +66,6 @@ struct vfio_device {
 
 struct vfio_iommu {
 	struct iommu_domain	*domain;
-	struct file		*file;
 	struct mm_struct	*mm;
 	struct list_head	group_list;
 	int			refcnt;

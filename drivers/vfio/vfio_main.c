@@ -36,8 +36,6 @@
 #define DRIVER_AUTHOR	"Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC	"VFIO - User Level meta-driver"
 
-#define MAX_PATH	256
-
 static int allow_unsafe_intrs;
 module_param(allow_unsafe_intrs, int, 0);
 MODULE_PARM_DESC(allow_unsafe_intrs,
@@ -63,6 +61,20 @@ printk("%s group %u unused\n", __FUNCTION__, group->groupid);
 	return false;
 }
 
+static bool __vfio_iommu_groups_inuse(struct vfio_iommu *iommu)
+{
+	struct list_head *pos;
+
+	list_for_each(pos, &iommu->group_list) {
+		struct vfio_group *group;
+
+		group = list_entry(pos, struct vfio_group, iommu_next);
+		if (group->refcnt)
+			return true;
+	}
+	return false;
+}
+
 static bool __vfio_iommu_inuse(struct vfio_iommu *iommu)
 {
 	struct list_head *pos;
@@ -77,10 +89,12 @@ printk("%s iommu %p in use refcnt %d\n", __FUNCTION__, iommu, iommu->refcnt);
 
 		group = list_entry(pos, struct vfio_group, iommu_next);
 
+#if 0 // group refcnt doesn't hold the iommu together
 		if (group->refcnt) {
 printk("%s iommu %p group %u in use\n", __FUNCTION__, iommu, group->groupid);
 			return true;
 		}
+#endif
 
 		if (__vfio_group_devs_inuse(group)) {
 printk("%s iommu %p group %u dev(s) in use\n", __FUNCTION__, iommu, group->groupid);
@@ -261,7 +275,6 @@ printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
 
 static int __vfio_try_dissolve_iommu(struct vfio_iommu *iommu)
 {
-	struct list_head *pos, *ppos;
 
 printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 	if (__vfio_iommu_inuse(iommu))
@@ -269,16 +282,22 @@ printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 
 	__vfio_close_iommu(iommu);
 
-	list_for_each_safe(pos, ppos, &iommu->group_list) {
-		struct vfio_group *group;
+	if (!__vfio_iommu_groups_inuse(iommu)) {
+		struct list_head *pos, *ppos;
 
-		group = list_entry(pos, struct vfio_group, iommu_next);
-		__vfio_group_set_iommu(group, NULL);
+printk("%s(iommu %p) removing iommu\n", __FUNCTION__, iommu);
+		list_for_each_safe(pos, ppos, &iommu->group_list) {
+			struct vfio_group *group;
+
+			group = list_entry(pos, struct vfio_group, iommu_next);
+			__vfio_group_set_iommu(group, NULL);
+		}
+
+
+		kfree(iommu);
 	}
 
 printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
-
-	kfree(iommu);
 
 	return 0;
 }
@@ -586,22 +605,10 @@ printk("%s\n", __FUNCTION__);
 			goto out;
 	}
 
-	if (!group->iommu->file) {
-		group->iommu->file = anon_inode_getfile("vfio-iommu",
-							&vfio_iommu_fops,
-							group->iommu, O_RDWR);
-		if (IS_ERR(group->iommu->file)) {
-			ret = PTR_ERR(group->iommu->file);
-			group->iommu->file = NULL;
-			goto out;
-		}
-	}
-
-	ret = get_unused_fd();
+	ret = anon_inode_getfd("[vfio-iommu]", &vfio_iommu_fops,
+			       group->iommu, O_RDWR);
 	if (ret < 0)
 		goto out;
-
-	fd_install(ret, group->iommu->file);
 
 	group->iommu->refcnt++;
 out:
@@ -640,27 +647,13 @@ printk("%s\n", __FUNCTION__);
 					goto out;
 				}
 
-				if (!device->file) {
-					struct file *file;
-
-					file = anon_inode_getfile(
-							"vfio-device",
-							&vfio_device_fops,
-							device, O_RDWR);
-					if (IS_ERR(file)) {
-						device->ops->put(device);
-						ret = PTR_ERR(file);
-						goto out;
-					}
-					device->file = file;
-				}
-				ret = get_unused_fd();
+				ret = anon_inode_getfd("[vfio-device]",
+						       &vfio_device_fops,
+						       device, O_RDWR);
 				if (ret < 0) {
 					device->ops->put(device);
 					goto out;
 				}
-
-				fd_install(ret, device->file);
 
 				device->refcnt++;
 				goto out;
@@ -676,6 +669,9 @@ static long vfio_group_unl_ioctl(struct file *filep,
 				 unsigned int cmd, unsigned long arg)
 {
 	struct vfio_group *group = filep->private_data;
+
+	if (group->iommu->mm && group->iommu->mm != current->mm)
+		return -EPERM;
 
 	switch (cmd) {
 	case VFIO_GROUP_MERGE:
@@ -700,7 +696,7 @@ static long vfio_group_unl_ioctl(struct file *filep,
 			char *buf;
 			int ret;
 
-			buf = strndup_user((const char __user *)arg, MAX_PATH);
+			buf = strndup_user((const char __user *)arg, PAGE_SIZE);
 			if (IS_ERR(buf))
 				return PTR_ERR(buf);
 

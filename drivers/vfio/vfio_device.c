@@ -32,10 +32,10 @@ static int vfio_device_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_device *device = filep->private_data;
 
+	vfio_release_device(device);
+
 	if (device->ops->put)
 		device->ops->put(device);
-
-	vfio_release_device(device);
 
 	return 0;
 }
