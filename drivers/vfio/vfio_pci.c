@@ -73,15 +73,12 @@ static void vfio_pci_free(struct vfio_device *device)
 
 static bool vfio_pci_match(struct vfio_device *device, char *buf)
 {
-	printk("%s(%s, %s) %s match\n", __FUNCTION__, dev_name(device->dev), buf, strcmp(dev_name(device->dev), buf) == 0 ? "" : "NO");
 	return strcmp(dev_name(device->dev), buf) == 0;
 }
 
 static int vfio_pci_get(struct vfio_device *device)
 {
-	int ret = try_module_get(THIS_MODULE);
-	printk("%s(): %d\n", __FUNCTION__, ret);
-	return ret;
+	return try_module_get(THIS_MODULE);
 }
 
 static void vfio_pci_put(struct vfio_device *device)
@@ -111,6 +108,7 @@ static int vfio_pci_device_notifier(struct notifier_block *nb,
                 return vfio_group_add_dev(dev, (void *)&vfio_pci_ops);
         else if (action == BUS_NOTIFY_DEL_DEVICE)
                 vfio_group_del_dev(dev);
+
         return 0;
 }
 
@@ -137,7 +135,6 @@ void __exit vfio_pci_cleanup(void)
 {
 	bool add = false;
 
-	printk("%s\n", __FUNCTION__);
 	bus_unregister_notifier(&pci_bus_type, &vfio_pci_device_nb);
 	pci_unregister_driver(&vfio_pci_driver);
 	bus_for_each_dev(&pci_bus_type, NULL, &add, vfio_pci_do_dev);

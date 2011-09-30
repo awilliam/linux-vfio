@@ -52,12 +52,9 @@ static bool __vfio_group_devs_inuse(struct vfio_group *group)
 		struct vfio_device *device;
 
 		device = list_entry(pos, struct vfio_device, device_next);
-		if (device->refcnt) {
-printk("%s group %u dev %s in use\n", __FUNCTION__, group->groupid, dev_name(device->dev));
+		if (device->refcnt)
 			return true;
-		}
 	}
-printk("%s group %u unused\n", __FUNCTION__, group->groupid);
 	return false;
 }
 
@@ -79,29 +76,17 @@ static bool __vfio_iommu_inuse(struct vfio_iommu *iommu)
 {
 	struct list_head *pos;
 
-	if (iommu->refcnt) {
-printk("%s iommu %p in use refcnt %d\n", __FUNCTION__, iommu, iommu->refcnt);
+	if (iommu->refcnt)
 		return true;
-	}
 
 	list_for_each(pos, &iommu->group_list) {
 		struct vfio_group *group;
 
 		group = list_entry(pos, struct vfio_group, iommu_next);
 
-#if 0 // group refcnt doesn't hold the iommu together
-		if (group->refcnt) {
-printk("%s iommu %p group %u in use\n", __FUNCTION__, iommu, group->groupid);
+		if (__vfio_group_devs_inuse(group))
 			return true;
-		}
-#endif
-
-		if (__vfio_group_devs_inuse(group)) {
-printk("%s iommu %p group %u dev(s) in use\n", __FUNCTION__, iommu, group->groupid);
-			return true;
-		}
 	}
-printk("%s iommu %p unused\n", __FUNCTION__, iommu);
 	return false;
 }
 
@@ -110,7 +95,6 @@ static void __vfio_group_set_iommu(struct vfio_group *group,
 {
 	struct list_head *pos;
 
-printk("%s(group %u, iommu %p)\n", __FUNCTION__, group->groupid, iommu);
 	if (group->iommu)
 		list_del(&group->iommu_next);
 	if (iommu)
@@ -131,7 +115,6 @@ static void __vfio_iommu_detach_dev(struct vfio_iommu *iommu,
 {
 	BUG_ON(!iommu->domain && device->attached);
 
-printk("%s(iommu %p, dev %s)\n", __FUNCTION__, iommu, dev_name(device->dev));
 	if (!iommu->domain || !device->attached)
 		return;
 
@@ -144,7 +127,6 @@ static void __vfio_iommu_detach_group(struct vfio_iommu *iommu,
 {
 	struct list_head *pos;
 
-printk("%s(iommu %p, group %u)\n", __FUNCTION__, iommu, group->groupid);
 	list_for_each(pos, &group->device_list) {
 		struct vfio_device *device;
 
@@ -167,7 +149,6 @@ static int __vfio_iommu_attach_dev(struct vfio_iommu *iommu,
 	if (!ret)
 		device->attached = true;
 
-printk("%s(iommu %p, dev %s): %d\n", __FUNCTION__, iommu, dev_name(device->dev), ret);
 	return ret;
 }
 
@@ -176,7 +157,6 @@ static int __vfio_iommu_attach_group(struct vfio_iommu *iommu,
 {
 	struct list_head *pos;
 
-printk("%s(iommu %p, group %u)\n", __FUNCTION__, iommu, group->groupid);
 	list_for_each(pos, &group->device_list) {
 		struct vfio_device *device;
 		int ret;
@@ -205,13 +185,10 @@ static bool __vfio_group_viable(struct vfio_iommu *iommu)
 					    struct vfio_device, device_next);
 
 			if (!device->dev->driver ||
-			    device->dev->driver->owner != device->ops->owner) {
-printk("%s(iommu %p) dev %s NOT viable\n", __FUNCTION__, iommu, dev_name(device->dev));
+			    device->dev->driver->owner != device->ops->owner)
 				return false;
-			}
 		}
 	}
-printk("%s(iommu %p) viable\n", __FUNCTION__, iommu);
 	return true;
 }
 
@@ -222,7 +199,6 @@ static void __vfio_close_iommu(struct vfio_iommu *iommu)
 	if (!iommu->domain)
 		return;
 
-printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 	list_for_each(pos, &iommu->group_list) {
 		struct vfio_group *group;
 		group = list_entry(pos, struct vfio_group, iommu_next);
@@ -239,7 +215,6 @@ static int __vfio_open_iommu(struct vfio_iommu *iommu)
 	struct list_head *pos;
 	int ret;
 
-printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 	if (!__vfio_group_viable(iommu))
 		return -EBUSY;
 
@@ -269,14 +244,12 @@ printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 
 	iommu->mm = current->mm;
 
-printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
 	return 0;
 }
 
 static int __vfio_try_dissolve_iommu(struct vfio_iommu *iommu)
 {
 
-printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 	if (__vfio_iommu_inuse(iommu))
 		return -EBUSY;
 
@@ -285,7 +258,6 @@ printk("%s(iommu %p)\n", __FUNCTION__, iommu);
 	if (!__vfio_iommu_groups_inuse(iommu)) {
 		struct list_head *pos, *ppos;
 
-printk("%s(iommu %p) removing iommu\n", __FUNCTION__, iommu);
 		list_for_each_safe(pos, ppos, &iommu->group_list) {
 			struct vfio_group *group;
 
@@ -296,8 +268,6 @@ printk("%s(iommu %p) removing iommu\n", __FUNCTION__, iommu);
 
 		kfree(iommu);
 	}
-
-printk("%s(iommu %p) OK\n", __FUNCTION__, iommu);
 
 	return 0;
 }
@@ -318,8 +288,6 @@ int vfio_group_add_dev(struct device *dev, void *data)
 	if (iommu_device_group(dev, &groupid))
 		return -ENODEV;
 
-printk("Adding %s, group id %u\n", dev_name(dev), groupid);
-
 	mutex_lock(&vfio.lock);
 
 	list_for_each(pos, &vfio.group_list) {
@@ -333,7 +301,6 @@ printk("Adding %s, group id %u\n", dev_name(dev), groupid);
 	if (!group) {
 		int minor;
 
-printk("New group!\n");
 		if (unlikely(idr_pre_get(&vfio.idr, GFP_KERNEL) == 0)) {
 			ret = -ENOMEM;
 			goto out;
@@ -356,7 +323,6 @@ printk("New group!\n");
 			goto out;
 		}
 
-printk("Minor %d\n", minor);
 		group->devt = MKDEV(MAJOR(vfio.devt), minor);
 		device_create(vfio.class, NULL, group->devt,
 			      group, "%u", groupid);
@@ -415,8 +381,6 @@ void vfio_group_del_dev(struct device *dev)
 
 	if (iommu_device_group(dev, &groupid))
 		return;
-
-printk("Removing %s, group id %u\n", dev_name(dev), groupid);
 
 	mutex_lock(&vfio.lock);
 
@@ -494,7 +458,6 @@ static int vfio_group_merge(struct vfio_group *group, int fd)
 		goto out;
 	}
 
-printk("merging group id %u & %u\n", group->groupid, new->groupid);
 	/*
 	 * We need to attach all the devices to each domain separately
 	 * in order to validate that the capabilities match for both.
@@ -533,8 +496,6 @@ printk("merging group id %u & %u\n", group->groupid, new->groupid);
 	kfree(old_iommu);
 
 out:
-	if (ret)
-printk("Merged failed %d\n", ret);
 	fput(file);
 out_noput:
 	mutex_unlock(&vfio.lock);
@@ -572,7 +533,6 @@ static int vfio_group_unmerge(struct vfio_group *group, int fd)
 		goto out;
 	}
 
-printk("unmerging group id %u & %u\n", group->groupid, new->groupid);
 	if (__vfio_group_devs_inuse(new)) {
 		ret = -EBUSY;
 		goto out;
@@ -582,8 +542,6 @@ printk("unmerging group id %u & %u\n", group->groupid, new->groupid);
 	__vfio_group_set_iommu(new, new_iommu);
 
 out:
-	if (ret)
-printk("Unmerged failed %d\n", ret);
 	fput(file);
 out_noput:
 	if (ret)
@@ -598,7 +556,6 @@ static int vfio_group_get_iommu_fd(struct vfio_group *group)
 
 	mutex_lock(&vfio.lock);
 
-printk("%s\n", __FUNCTION__);
 	if (!group->iommu->domain) {
 		ret = __vfio_open_iommu(group->iommu);
 		if (ret)
@@ -623,7 +580,7 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 	int ret = -ENODEV;
 
 	mutex_lock(&vfio.lock);
-printk("%s\n", __FUNCTION__);
+
 	if (!iommu->domain) {
 		ret = __vfio_open_iommu(iommu);
 		if (ret)
@@ -725,7 +682,6 @@ static int vfio_group_open(struct inode *inode, struct file *filep)
 
 	mutex_lock(&vfio.lock);
 
-printk("%s\n", __FUNCTION__);
 	group = idr_find(&vfio.idr, iminor(inode));
 
 	if (!group) {
@@ -760,7 +716,6 @@ static int vfio_group_release(struct inode *inode, struct file *filep)
 
 	mutex_lock(&vfio.lock);
 
-printk("%s\n", __FUNCTION__);
 	group->refcnt--;
 
 	__vfio_try_dissolve_iommu(group->iommu);
@@ -774,7 +729,6 @@ int vfio_release_device(struct vfio_device *device)
 {
 	mutex_lock(&vfio.lock);
 
-printk("%s\n", __FUNCTION__);
 	device->refcnt--;
 	__vfio_try_dissolve_iommu(device->iommu);
 
@@ -789,7 +743,6 @@ int vfio_release_iommu(struct vfio_iommu *iommu)
 {
 	mutex_lock(&vfio.lock);
 
-printk("%s\n", __FUNCTION__);
 	iommu->refcnt--;
 	__vfio_try_dissolve_iommu(iommu);
 
@@ -864,7 +817,6 @@ static void __exit vfio_cleanup(void)
 {
 	struct list_head *gpos, *gppos;
 
-printk("%s\n", __FUNCTION__);
 	list_for_each_safe(gpos, gppos, &vfio.group_list) {
 		struct vfio_group *group;
 		struct list_head *dpos, *dppos;
