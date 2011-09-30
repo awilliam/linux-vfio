@@ -55,27 +55,6 @@ void print_group(unsigned int number)
 	else
 		fprintf(stdout, "---- Group %u (fd %d) ----\n",
 			number, group->fd);
-#if 0
-	char buf[4096];
-	int ret;
-
-	for (; group && group->number != number; group = group->next);
-
-	if (!group) {
-		fprintf(stderr, "Group %u not found\n", number);
-	} else {
-		ret = pread(group->fd, buf, sizeof(buf), 0);
-		if (ret < 0) {
-			fprintf(stderr, "Error reading group %u (%s)\n",
-				group, strerror(errno));
-			return;
-		}
-		fprintf(stdout, "---- Group %u (fd %d) begin ----\n",
-			number, group->fd);
-		fprintf(stdout, "%s", buf);
-		fprintf(stdout, "---- Group %u end ----\n", number);
-	}
-#endif
 }
 
 void print_device(struct device *device)
@@ -102,6 +81,8 @@ int do_device()
 			fprintf(stdout, "[o]pen - open device\n");
 			fprintf(stdout, "[c]lose - close device\n");
 			fprintf(stdout, "[l]ist - list devices\n");
+			fprintf(stdout, "[r]egion - list regions\n");
+			fprintf(stdout, "[i]rq - list irqs\n");
 
 		} else if (!strcmp(cmd, "open") || !strcmp(cmd, "o")) {
 			int fd;
@@ -170,6 +151,70 @@ int do_device()
 			free(device);
 			return 0;
 
+		} else if (!strcmp(cmd, "region") || !strcmp(cmd, "r")) {
+			int fd, i, regions;
+
+			fprintf(stdout, "device fd: ");
+			fscanf(stdin, "%d", &fd);
+
+			ret = ioctl(fd, VFIO_DEVICE_GET_NUM_REGIONS, &regions);
+			if (ret) {
+				fprintf(stderr, "get num regions failed (%s)\n",
+					strerror(errno));
+				return ret;
+			}
+
+			fprintf(stdout, "regions: %d\n", regions);
+			for (i = 0; i < regions; i++) {
+				struct vfio_region_info info;
+
+				info.len = sizeof(info);
+				info.index = i;
+
+				ret = ioctl(fd, VFIO_DEVICE_GET_REGION_INFO, &info);
+				if (ret) {
+					fprintf(stderr, "get region %d info failed (%s)\n",
+					i, strerror(errno));
+					continue;
+				}
+
+				fprintf(stdout, "region[%d]\n", i);
+				fprintf(stdout, " size %016lx\n", info.size);
+				fprintf(stdout, " offset %016lx\n", info.offset);
+				fprintf(stdout, " flags %016lx\n", info.flags);
+			}
+
+		} else if (!strcmp(cmd, "irq") || !strcmp(cmd, "i")) {
+			int fd, i, irqs;
+
+			fprintf(stdout, "device fd: ");
+			fscanf(stdin, "%d", &fd);
+
+			ret = ioctl(fd, VFIO_DEVICE_GET_NUM_IRQS, &irqs);
+			if (ret) {
+				fprintf(stderr, "get num irqs failed (%s)\n",
+					strerror(errno));
+				return ret;
+			}
+
+			fprintf(stdout, "irqs: %d\n", irqs);
+			for (i = 0; i < irqs; i++) {
+				struct vfio_irq_info info;
+
+				info.len = sizeof(info);
+				info.index = i;
+
+				ret = ioctl(fd, VFIO_DEVICE_GET_IRQ_INFO, &info);
+				if (ret) {
+					fprintf(stderr, "get irq %d info failed (%s)\n",
+					i, strerror(errno));
+					continue;
+				}
+
+				fprintf(stdout, "irq[%d]\n", i);
+				fprintf(stdout, " count %d\n", info.count);
+				fprintf(stdout, " flags %016lx\n", info.flags);
+			}
 		} else if (!strcmp(cmd, "list") || !strcmp(cmd, "l")) {
 			struct device *device;
 
@@ -369,9 +414,6 @@ int main(int argc, char **argv)
 					continue;
 			}
 
-			print_group(numberA);
-			print_group(numberB);
-
 		} else if (!strcmp(cmd, "unmerge") || !strcmp(cmd, "u")) {
 			unsigned int numberA, numberB;
 			struct group *groupA, *groupB;
@@ -408,9 +450,6 @@ int main(int argc, char **argv)
 					strerror(errno));
 					continue;
 			}
-
-			print_group(numberA);
-			print_group(numberB);
 		}
 	}
 }
