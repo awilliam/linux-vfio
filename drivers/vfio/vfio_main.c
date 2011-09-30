@@ -41,8 +41,30 @@ module_param(allow_unsafe_intrs, int, 0);
 MODULE_PARM_DESC(allow_unsafe_intrs,
         "Allow use of IOMMUs which do not support interrupt remapping");
 
+struct vfio {
+	dev_t			devt;
+	struct cdev		cdev;
+	struct list_head	group_list;
+	struct mutex		lock;
+	struct kref		kref;
+	struct class		*class;
+	struct idr		idr;
+};
+
 static struct vfio vfio;
 static const struct file_operations vfio_group_fops;
+extern const struct file_operations vfio_iommu_fops;
+extern const struct file_operations vfio_device_fops;
+
+struct vfio_group {
+	dev_t			devt;
+	unsigned int		groupid;
+	struct vfio_iommu	*iommu;
+	struct list_head	device_list;
+	struct list_head	iommu_next;
+	struct list_head	group_next;
+	int			refcnt;
+};
 
 static bool __vfio_group_devs_inuse(struct vfio_group *group)
 {

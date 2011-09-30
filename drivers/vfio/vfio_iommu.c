@@ -25,6 +25,8 @@
 
 #include "vfio_private.h"
 
+extern int vfio_release_iommu(struct vfio_iommu *iommu);
+
 static int vfio_iommu_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_iommu *iommu = filep->private_data;

@@ -55,8 +55,6 @@ static struct vfio_device *vfio_pci_alloc(struct device *dev)
 
 	pvdev->pdev = container_of(dev, struct pci_dev, dev);
 
-	// PCI stuff...
-
 	return &pvdev->device;
 }
 
@@ -65,8 +63,6 @@ static void vfio_pci_free(struct vfio_device *device)
 	struct vfio_pci_device *pvdev;
 
 	pvdev = container_of(device, struct vfio_pci_device, device);
-
-	// PCI stuff...
 
 	kfree(pvdev);
 }
@@ -86,12 +82,19 @@ static void vfio_pci_put(struct vfio_device *device)
 	module_put(THIS_MODULE);
 }
 
+static long vfio_pci_ioctl(struct vfio_device *device,
+			   unsigned int cmd, unsigned long arg)
+{
+	return -ENOSYS;
+}
+
 static const struct vfio_device_ops vfio_pci_ops = {
 	.alloc	= vfio_pci_alloc,
 	.free	= vfio_pci_free,
 	.match	= vfio_pci_match,
 	.get	= vfio_pci_get,
 	.put	= vfio_pci_put,
+	.ioctl	= vfio_pci_ioctl,
 	.owner	= THIS_MODULE,
 };
 

@@ -28,6 +28,8 @@
 
 #include "vfio_private.h"
 
+extern int vfio_release_device(struct vfio_device *device);
+
 static int vfio_device_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_device *device = filep->private_data;

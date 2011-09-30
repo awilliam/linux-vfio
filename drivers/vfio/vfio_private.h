@@ -24,19 +24,6 @@
 #ifndef VFIO_PRIVATE_H
 #define VFIO_PRIVATE_H
 
-extern const struct file_operations vfio_iommu_fops;
-extern const struct file_operations vfio_device_fops;
-
-struct vfio {
-	dev_t			devt;
-	struct cdev		cdev;
-	struct list_head	group_list;
-	struct mutex		lock;
-	struct kref		kref;
-	struct class		*class;
-	struct idr		idr;
-};
-
 struct vfio_device_ops {
 	struct vfio_device	*(* alloc)(struct device *);
 	void			(* free)(struct vfio_device *);
@@ -71,20 +58,7 @@ struct vfio_iommu {
 	int			refcnt;
 };
 	
-struct vfio_group {
-	dev_t			devt;
-	unsigned int		groupid;
-	struct vfio_iommu	*iommu;
-	struct list_head	device_list;
-	struct list_head	iommu_next;
-	struct list_head	group_next;
-	int			refcnt;
-};
-
 extern int vfio_group_add_dev(struct device *device, void *data);
 extern void vfio_group_del_dev(struct device *device);
-
-extern int vfio_release_device(struct vfio_device *device);
-extern int vfio_release_iommu(struct vfio_iommu *iommu);
 
 #endif /* VFIO_PRIVATE_H */
