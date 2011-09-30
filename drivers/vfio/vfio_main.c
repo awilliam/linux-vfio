@@ -59,7 +59,8 @@ int vfio_group_add_dev(struct device *dev, void *data)
 	struct vfio_group *vgroup = NULL;
 	struct vfio_device *vdev = NULL;
 	unsigned int group;
-	int ret = 0, new_group = 0;
+	int ret = 0;
+	bool new_group = false;
 
 	if (iommu_device_group(dev, &group))
 		return 0;
@@ -102,7 +103,7 @@ int vfio_group_add_dev(struct device *dev, void *data)
 		device_create(vfio.class, NULL, vgroup->devt,
 			      vgroup, "%u", group);
 
-		new_group = 1;
+		new_group = true;
 	} else {
 		list_for_each(pos, &vgroup->device_list) {
 			vdev = list_entry(pos, struct vfio_device, next);
@@ -197,7 +198,7 @@ out:
 	mutex_unlock(&vfio.group_lock);
 }
 
-static int __vfio_group_viable(struct vfio_container *vcontainer)
+static bool __vfio_group_viable(struct vfio_container *vcontainer)
 {
 	struct list_head *gpos, *dpos;
 
@@ -213,10 +214,10 @@ static int __vfio_group_viable(struct vfio_container *vcontainer)
 
 			if (!vdev->dev->driver ||
 			    vdev->dev->driver->owner != THIS_MODULE)
-				return 0;
+				return false;
 		}
 	}
-	return 1;
+	return true;
 }
 
 static int __vfio_close_iommu(struct vfio_container *vcontainer)
