@@ -824,10 +824,11 @@ int vfio_bind_dev(struct device *dev)
 
 	device = __vfio_lookup_dev(dev);
 
-	if (device) {
-		device->bound = true;
-		ret = 0;
-	}
+	BUG_ON(!device);
+
+	ret = dev_set_drvdata(dev, device);
+	if (!ret)
+	    device->bound = true;
 
 	mutex_unlock(&vfio.lock);
 	return ret;
@@ -835,16 +836,13 @@ int vfio_bind_dev(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(vfio_bind_dev);
 
-static bool vfio_dev_removeable(struct device *dev)
+static bool vfio_device_removeable(struct vfio_device *device)
 {
-	struct vfio_device *device;
 	bool ret = true;
 
 	mutex_lock(&vfio.lock);
 
-	device = __vfio_lookup_dev(dev);
-
-	if (device && device->iommu && __vfio_iommu_inuse(device->iommu))
+	if (device->iommu && __vfio_iommu_inuse(device->iommu))
 		ret = false;
 
 	mutex_unlock(&vfio.lock);
@@ -853,25 +851,24 @@ static bool vfio_dev_removeable(struct device *dev)
 
 void vfio_unbind_dev(struct device *dev)
 {
-	struct vfio_device *device;
+	struct vfio_device *device = dev_get_drvdata(dev);
+
+	BUG_ON(!device);
 
 again:
-	if (!vfio_dev_removeable(dev)) {
+	if (!vfio_device_removeable(device)) {
 		// XXX signal for all devices in group to be removed
-		wait_event(vfio.release_q, vfio_dev_removeable(dev));
+		wait_event(vfio.release_q, vfio_device_removeable(device));
 	}
 
 	mutex_lock(&vfio.lock);
 
-	device = __vfio_lookup_dev(dev);
-
-	if (device) {
-		if (device->iommu && __vfio_iommu_inuse(device->iommu)) {
-			mutex_unlock(&vfio.lock);
-			goto again;
-		}
-		device->bound = false;
+	if (device->iommu && __vfio_iommu_inuse(device->iommu)) {
+		mutex_unlock(&vfio.lock);
+		goto again;
 	}
+	device->bound = false;
+	dev_set_drvdata(dev, NULL);
 
 	mutex_unlock(&vfio.lock);
 	return;
