@@ -213,7 +213,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 	}
 
 	case VFIO_DEVICE_GET_NUM_REGIONS:
-		return put_user(8, (u32 __user *)arg);
+		return put_user(VFIO_PCI_NUM_REGIONS, (u32 __user *)arg);
 
 	case VFIO_DEVICE_GET_REGION_INFO:
 	{
@@ -230,7 +230,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 		if (copy_from_user(&info, (void __user *)arg, len))
 			return -EFAULT;
 
-		if (info.index >= 8)
+		if (info.index >= VFIO_PCI_NUM_REGIONS)
 			return -EINVAL;
 
 		memset(&info.size, 0,
@@ -238,11 +238,11 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 
 		info.offset = (u64)info.index << VFIO_PCI_OFFSET_SHIFT;
 
-		if (info.index == 7) { /* Config space */
+		if (info.index == VFIO_PCI_CONFIG_REGION_INDEX) {
 			info.size = pvdev->pdev->cfg_size;
 		} else if (pci_resource_start(pvdev->pdev, info.index)) {
 			info.size = pci_resource_len(pvdev->pdev, info.index);
-			if (info.index == PCI_ROM_RESOURCE)
+			if (info.index == VFIO_PCI_ROM_REGION_INDEX)
 				info.flags |= VFIO_REGION_INFO_FLAG_RO;
 			else if (pci_resource_flags(pvdev->pdev,info.index) &
 				 IORESOURCE_MEM)
@@ -256,7 +256,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 	}
 
 	case VFIO_DEVICE_GET_NUM_IRQS:
-		return put_user(3, (u32 __user *)arg);
+		return put_user(VFIO_PCI_NUM_IRQS, (u32 __user *)arg);
 
 	case VFIO_DEVICE_GET_IRQ_INFO:
 	{
@@ -275,7 +275,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 		memset(&info.count, 0,
 		       len - offsetof(struct vfio_irq_info, count));
 
-		if (info.index == 0) { /* legacy */
+		if (info.index == VFIO_PCI_INTX_IRQ_INDEX) {
 			u8 pin;
 			pci_read_config_byte(pvdev->pdev,
 					     PCI_INTERRUPT_PIN, &pin);
@@ -283,7 +283,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 				info.count = 1;
 				info.flags = VFIO_IRQ_INFO_FLAG_LEVEL;
 			}
-		} else if (info.index == 1) { /* MSI */
+		} else if (info.index == VFIO_PCI_MSI_IRQ_INDEX) {
 			u8 pos;
 			u16 flags;
 
@@ -295,7 +295,7 @@ static long vfio_pci_ioctl(struct vfio_device *device,
 
 				info.count = 1 << (flags & PCI_MSI_FLAGS_QMASK);
 			}
-		} else if (info.index == 2) { /* MSI-X */
+		} else if (info.index == VFIO_PCI_MSIX_IRQ_INDEX) {
 			u8 pos;
 			u16 flags;
 
