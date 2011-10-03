@@ -38,7 +38,6 @@ struct vfio_device_ops {
 					 unsigned int, unsigned long);
 	int			(*mmap)(struct vfio_device *,
 					struct vm_area_struct *);
-	struct module		*owner;
 };
 
 struct vfio_device {
@@ -48,6 +47,7 @@ struct vfio_device {
 	struct vfio_group	*group;
 	struct list_head	device_next;
 	bool			attached;
+	bool			bound;
 	int			refcnt;
 };
 
@@ -60,5 +60,7 @@ struct vfio_iommu {
 	
 extern int vfio_group_add_dev(struct device *device, void *data);
 extern void vfio_group_del_dev(struct device *device);
+extern int vfio_bind_dev(struct device *device);
+extern void vfio_unbind_dev(struct device *device);
 
 #endif /* VFIO_PRIVATE_H */

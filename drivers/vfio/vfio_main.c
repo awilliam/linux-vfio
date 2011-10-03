@@ -29,6 +29,7 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/vfio.h>
+#include <linux/wait.h>
 
 #include "vfio_private.h"
 
@@ -49,6 +50,7 @@ struct vfio {
 	struct kref		kref;
 	struct class		*class;
 	struct idr		idr;
+	wait_queue_head_t	release_q;
 };
 
 static struct vfio vfio;
@@ -206,8 +208,7 @@ static bool __vfio_group_viable(struct vfio_iommu *iommu)
 			device = list_entry(dpos,
 					    struct vfio_device, device_next);
 
-			if (!device->dev->driver ||
-			    device->dev->driver->owner != device->ops->owner)
+			if (!device->bound)
 				return false;
 		}
 	}
@@ -735,45 +736,147 @@ out:
 static int vfio_group_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_group *group = filep->private_data;
+	bool wake;
 
 	mutex_lock(&vfio.lock);
 
 	group->refcnt--;
-
-	__vfio_try_dissolve_iommu(group->iommu);
+	wake = (__vfio_try_dissolve_iommu(group->iommu) == 0);
 
 	mutex_unlock(&vfio.lock);
+
+	if (wake)
+		wake_up(&vfio.release_q);
 
 	return 0;
 }
 
 int vfio_release_device(struct vfio_device *device)
 {
+	bool wake;
+
 	mutex_lock(&vfio.lock);
 
 	device->refcnt--;
-	__vfio_try_dissolve_iommu(device->iommu);
-
-	// XXX put file?
+	wake = (__vfio_try_dissolve_iommu(device->iommu) == 0);
 
 	mutex_unlock(&vfio.lock);
+
+	if (wake)
+		wake_up(&vfio.release_q);
 
 	return 0;
 }
 
 int vfio_release_iommu(struct vfio_iommu *iommu)
 {
+	bool wake;
+
 	mutex_lock(&vfio.lock);
 
 	iommu->refcnt--;
-	__vfio_try_dissolve_iommu(iommu);
-
-	// XXX put file?
+	wake = (__vfio_try_dissolve_iommu(iommu) == 0);
 
 	mutex_unlock(&vfio.lock);
 
+	if (wake)
+		wake_up(&vfio.release_q);
+
 	return 0;
 }
+
+static struct vfio_device *__vfio_lookup_dev(struct device *dev)
+{
+	struct list_head *gpos;
+	unsigned int groupid;
+
+	if (iommu_device_group(dev, &groupid))
+		return NULL;
+
+	list_for_each(gpos, &vfio.group_list) {
+		struct vfio_group *group;
+		struct list_head *dpos;
+
+		group = list_entry(gpos, struct vfio_group, group_next);
+
+		if (group->groupid != groupid)
+			continue;
+
+		list_for_each(dpos, &group->device_list) {
+			struct vfio_device *device;
+
+			device = list_entry(dpos,
+					    struct vfio_device, device_next);
+
+			if (device->dev == dev)
+				return device;
+		}
+	}
+	return NULL;
+}
+
+int vfio_bind_dev(struct device *dev)
+{
+	struct vfio_device *device;
+	int ret = -EINVAL;
+
+	mutex_lock(&vfio.lock);
+
+	device = __vfio_lookup_dev(dev);
+
+	if (device) {
+		device->bound = true;
+		ret = 0;
+	}
+
+	mutex_unlock(&vfio.lock);
+	return ret;
+
+}
+EXPORT_SYMBOL_GPL(vfio_bind_dev);
+
+static bool vfio_dev_removeable(struct device *dev)
+{
+	struct vfio_device *device;
+	bool ret = true;
+
+	mutex_lock(&vfio.lock);
+
+	device = __vfio_lookup_dev(dev);
+
+	if (device && device->iommu && __vfio_iommu_inuse(device->iommu))
+		ret = false;
+
+	mutex_unlock(&vfio.lock);
+	return ret;
+}
+
+void vfio_unbind_dev(struct device *dev)
+{
+	struct vfio_device *device;
+
+again:
+	if (!vfio_dev_removeable(dev)) {
+		// XXX signal for all devices in group to be removed
+		wait_event(vfio.release_q, vfio_dev_removeable(dev));
+	}
+
+	mutex_lock(&vfio.lock);
+
+	device = __vfio_lookup_dev(dev);
+
+	if (device) {
+		if (device->iommu && __vfio_iommu_inuse(device->iommu)) {
+			mutex_unlock(&vfio.lock);
+			goto again;
+		}
+		device->bound = false;
+	}
+
+	mutex_unlock(&vfio.lock);
+	return;
+}
+EXPORT_SYMBOL_GPL(vfio_unbind_dev);
 
 static const struct file_operations vfio_group_fops = {
 	.owner		= THIS_MODULE,
@@ -803,6 +906,7 @@ static int __init vfio_init(void)
 	idr_init(&vfio.idr);
 	mutex_init(&vfio.lock);
 	INIT_LIST_HEAD(&vfio.group_list);
+	init_waitqueue_head(&vfio.release_q);
 
 	kref_init(&vfio.kref);
 	vfio.class = class_create(THIS_MODULE, "vfio");

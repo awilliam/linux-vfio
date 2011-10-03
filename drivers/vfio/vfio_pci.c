@@ -74,11 +74,18 @@ static int verify_pci_2_3(struct pci_dev *pdev)
 
 static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	return 0;
+	u8 type;
+
+	pci_read_config_byte(pdev, PCI_HEADER_TYPE, &type);
+	if ((type & PCI_HEADER_TYPE) != PCI_HEADER_TYPE_NORMAL)
+		return -EINVAL;
+
+	return vfio_bind_dev(&pdev->dev);
 }
 
 static void vfio_pci_remove(struct pci_dev *pdev)
 {
+	vfio_unbind_dev(&pdev->dev);
 }
 
 static struct pci_driver vfio_pci_driver = {
@@ -341,7 +348,6 @@ static const struct vfio_device_ops vfio_pci_ops = {
 	.get	= vfio_pci_get,
 	.put	= vfio_pci_put,
 	.ioctl	= vfio_pci_ioctl,
-	.owner	= THIS_MODULE,
 };
 
 static int vfio_pci_device_notifier(struct notifier_block *nb,
