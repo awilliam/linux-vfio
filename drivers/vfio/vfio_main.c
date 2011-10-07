@@ -265,6 +265,7 @@ static int __vfio_open_iommu(struct vfio_iommu *iommu)
 		return -EFAULT;
 	}
 
+	iommu->cache = (iommu_domain_has_cap(iommu->domain, IOMMU_CAP_CACHE_COHERENCY) != 0);
 	iommu->mm = current->mm;
 
 	return 0;
@@ -537,6 +538,8 @@ static int vfio_group_unmerge(struct vfio_group *group, int fd)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&new_iommu->group_list);
+	INIT_LIST_HEAD(&new_iommu->dm_list);
+	mutex_init(&new_iommu->dgate);
 
 	mutex_lock(&vfio.lock);
 
@@ -622,11 +625,34 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 					  struct vfio_device, device_next);
 
 			if (device->ops->match(device, buf)) {
+				struct file *file;
+
 				if (!device->ops->get(device)) {
 					ret = -EFAULT;
 					goto out;
 				}
 
+				ret = get_unused_fd();
+				if (ret < 0) {
+					device->ops->put(device);
+					goto out;
+				}
+
+				file = anon_inode_getfile("[vfio-device]",
+							  &vfio_device_fops,
+							  device, O_RDWR);
+				if (IS_ERR(file)) {
+					put_unused_fd(ret);
+					ret = PTR_ERR(file);
+					device->ops->put(device);
+					goto out;
+				}
+
+				printk("device file f_mode: %lx\n", file->f_mode);
+				file->f_mode |= (FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE);
+
+				fd_install(ret, file);
+#if 0
 				ret = anon_inode_getfd("[vfio-device]",
 						       &vfio_device_fops,
 						       device, O_RDWR);
@@ -634,6 +660,7 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 					device->ops->put(device);
 					goto out;
 				}
+#endif
 
 				device->refcnt++;
 				goto out;
@@ -723,13 +750,15 @@ static int vfio_group_open(struct inode *inode, struct file *filep)
 			goto out;
 		}
 		INIT_LIST_HEAD(&iommu->group_list);
+		INIT_LIST_HEAD(&iommu->dm_list);
+		mutex_init(&iommu->dgate);
 		__vfio_group_set_iommu(group, iommu);
 	}
 	group->refcnt++;
 
+out:
 	mutex_unlock(&vfio.lock);
 
-out:
 	return ret;
 }
 

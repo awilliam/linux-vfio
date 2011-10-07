@@ -11,12 +11,7 @@
  * Author: Tom Lyon, pugs@cisco.com
  */
 
-#include <linux/cdev.h>
 #include <linux/device.h>
-#include <linux/file.h>
-#include <linux/fs.h>
-#include <linux/idr.h>
-#include <linux/iommu.h>
 #include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/mutex.h>
@@ -53,9 +48,12 @@ struct vfio_device {
 
 struct vfio_iommu {
 	struct iommu_domain	*domain;
+	struct mutex		dgate;
+	struct list_head	dm_list;
 	struct mm_struct	*mm;
 	struct list_head	group_list;
 	int			refcnt;
+	bool			cache;
 };
 	
 extern int vfio_group_add_dev(struct device *device, void *data);

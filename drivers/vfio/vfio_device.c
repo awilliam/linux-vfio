@@ -58,6 +58,7 @@ static ssize_t vfio_device_read(struct file *filep, char __user *buf,
 {
 	struct vfio_device *device = filep->private_data;
 
+printk("%s count %ld, offset %lx\n", __func__, count, *ppos);
 	if (device->ops->read)
 		return device->ops->read(device, buf, count, ppos);
 
