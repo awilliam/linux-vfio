@@ -208,7 +208,7 @@ static bool __vfio_group_viable(struct vfio_iommu *iommu)
 			device = list_entry(dpos,
 					    struct vfio_device, device_next);
 
-			if (!device->bound)
+			if (!device->device_data)
 				return false;
 		}
 	}
@@ -296,9 +296,8 @@ static int __vfio_try_dissolve_iommu(struct vfio_iommu *iommu)
 	return 0;
 }
 
-int vfio_group_add_dev(struct device *dev, void *data)
+int vfio_group_add_dev(struct device *dev, const struct vfio_device_ops *ops)
 {
-	struct vfio_device_ops *ops = data;
 	struct list_head *pos;
 	struct vfio_group *group = NULL;
 	struct vfio_device *device = NULL;
@@ -371,8 +370,8 @@ int vfio_group_add_dev(struct device *dev, void *data)
 			       dev_name(dev), group->groupid);
 		}
 
-		device = ops->alloc(dev);
-		if (IS_ERR(device)) {
+		device = kzalloc(sizeof(*device), GFP_KERNEL);
+		if (!device) {
 			/* If we just created this group, tear it down */
 			if (new_group) {
 				list_del(&group->group_next);
@@ -380,7 +379,7 @@ int vfio_group_add_dev(struct device *dev, void *data)
 				idr_remove(&vfio.idr, MINOR(group->devt));
 				kfree(group);
 			}
-			ret = PTR_ERR(device);
+			ret = -ENOMEM;
 			goto out;
 		}
 
@@ -434,7 +433,7 @@ void vfio_group_del_dev(struct device *dev)
 		__vfio_iommu_detach_dev(group->iommu, device);
 
 	list_del(&device->device_next);
-	device->ops->free(device);
+	kfree(device);
 
 	if (list_empty(&group->device_list) && group->refcnt == 0) {
 		struct vfio_iommu *iommu = group->iommu;
@@ -624,17 +623,17 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 			device = list_entry(dpos,
 					  struct vfio_device, device_next);
 
-			if (device->ops->match(device, buf)) {
+			if (device->ops->match(device->dev, buf)) {
 				struct file *file;
 
-				if (!device->ops->get(device)) {
+				if (device->ops->get(device->device_data)) {
 					ret = -EFAULT;
 					goto out;
 				}
 
 				ret = get_unused_fd();
 				if (ret < 0) {
-					device->ops->put(device);
+					device->ops->put(device->device_data);
 					goto out;
 				}
 
@@ -644,12 +643,14 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 				if (IS_ERR(file)) {
 					put_unused_fd(ret);
 					ret = PTR_ERR(file);
-					device->ops->put(device);
+					device->ops->put(device->device_data);
 					goto out;
 				}
 
-				printk("device file f_mode: %lx\n", file->f_mode);
-				file->f_mode |= (FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE);
+				/* Is there an API to do this?  Otherwise
+				 * we get illegal seek on the fd */
+				file->f_mode |= (FMODE_LSEEK |
+						 FMODE_PREAD | FMODE_PWRITE);
 
 				fd_install(ret, file);
 #if 0
@@ -844,7 +845,7 @@ static struct vfio_device *__vfio_lookup_dev(struct device *dev)
 	return NULL;
 }
 
-int vfio_bind_dev(struct device *dev)
+int vfio_bind_dev(struct device *dev, void *device_data)
 {
 	struct vfio_device *device;
 	int ret = -EINVAL;
@@ -857,7 +858,7 @@ int vfio_bind_dev(struct device *dev)
 
 	ret = dev_set_drvdata(dev, device);
 	if (!ret)
-	    device->bound = true;
+		device->device_data = device_data;
 
 	mutex_unlock(&vfio.lock);
 	return ret;
@@ -878,9 +879,10 @@ static bool vfio_device_removeable(struct vfio_device *device)
 	return ret;
 }
 
-void vfio_unbind_dev(struct device *dev)
+void *vfio_unbind_dev(struct device *dev)
 {
 	struct vfio_device *device = dev_get_drvdata(dev);
+	void *device_data;
 
 	BUG_ON(!device);
 
@@ -896,11 +898,14 @@ again:
 		mutex_unlock(&vfio.lock);
 		goto again;
 	}
-	device->bound = false;
+
+	device_data = device->device_data;
+
+	device->device_data = NULL;
 	dev_set_drvdata(dev, NULL);
 
 	mutex_unlock(&vfio.lock);
-	return;
+	return device_data;
 }
 EXPORT_SYMBOL_GPL(vfio_unbind_dev);
 

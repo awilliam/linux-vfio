@@ -11,54 +11,31 @@
  * Author: Tom Lyon, pugs@cisco.com
  */
 
-#include <linux/device.h>
 #include <linux/list.h>
-#include <linux/mm.h>
 #include <linux/mutex.h>
 
 #ifndef VFIO_PRIVATE_H
 #define VFIO_PRIVATE_H
 
-struct vfio_device_ops {
-	struct vfio_device	*(* alloc)(struct device *);
-	void			(* free)(struct vfio_device *);
-	bool			(*match)(struct vfio_device *, char *);
-	int			(*get)(struct vfio_device *);
-	void			(*put)(struct vfio_device *);
-        ssize_t			(*read)(struct vfio_device *,
-					char __user *, size_t, loff_t *);
-        ssize_t			(*write)(struct vfio_device *,
-					 const char __user *, size_t, loff_t *);
-        long			(*ioctl)(struct vfio_device *,
-					 unsigned int, unsigned long);
-	int			(*mmap)(struct vfio_device *,
-					struct vm_area_struct *);
-};
-
 struct vfio_device {
-	struct device		*dev;
-	struct vfio_device_ops	*ops;
-	struct vfio_iommu	*iommu;
-	struct vfio_group	*group;
-	struct list_head	device_next;
-	bool			attached;
-	bool			bound;
-	int			refcnt;
+	struct device			*dev;
+	const struct vfio_device_ops	*ops;
+	struct vfio_iommu		*iommu;
+	struct vfio_group		*group;
+	struct list_head		device_next;
+	bool				attached;
+	int				refcnt;
+	void				*device_data;
 };
 
 struct vfio_iommu {
-	struct iommu_domain	*domain;
-	struct mutex		dgate;
-	struct list_head	dm_list;
-	struct mm_struct	*mm;
-	struct list_head	group_list;
-	int			refcnt;
-	bool			cache;
+	struct iommu_domain		*domain;
+	struct mutex			dgate;
+	struct list_head		dm_list;
+	struct mm_struct		*mm;
+	struct list_head		group_list;
+	int				refcnt;
+	bool				cache;
 };
 	
-extern int vfio_group_add_dev(struct device *device, void *data);
-extern void vfio_group_del_dev(struct device *device);
-extern int vfio_bind_dev(struct device *device);
-extern void vfio_unbind_dev(struct device *device);
-
 #endif /* VFIO_PRIVATE_H */

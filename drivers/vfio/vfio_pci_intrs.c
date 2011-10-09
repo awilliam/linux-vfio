@@ -42,7 +42,6 @@
 
 #include "vfio_pci_private.h"
 
-
 /*
  * vfio_interrupt - IRQ hardware interrupt handler
  */

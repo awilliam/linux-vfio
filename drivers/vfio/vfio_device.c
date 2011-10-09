@@ -36,8 +36,7 @@ static int vfio_device_release(struct inode *inode, struct file *filep)
 
 	vfio_release_device(device);
 
-	if (device->ops->put)
-		device->ops->put(device);
+	device->ops->put(device->device_data);
 
 	return 0;
 }
@@ -47,10 +46,7 @@ static long vfio_device_unl_ioctl(struct file *filep,
 {
 	struct vfio_device *device = filep->private_data;
 
-	if (device->ops->ioctl)
-		return device->ops->ioctl(device, cmd, arg);
-
-	return -ENOSYS;
+	return device->ops->ioctl(device->device_data, cmd, arg);
 }
 
 static ssize_t vfio_device_read(struct file *filep, char __user *buf,
@@ -58,11 +54,7 @@ static ssize_t vfio_device_read(struct file *filep, char __user *buf,
 {
 	struct vfio_device *device = filep->private_data;
 
-printk("%s count %ld, offset %lx\n", __func__, count, *ppos);
-	if (device->ops->read)
-		return device->ops->read(device, buf, count, ppos);
-
-	return -EINVAL;
+	return device->ops->read(device->device_data, buf, count, ppos);
 }
 
 static ssize_t vfio_device_write(struct file *filep, const char __user *buf,
@@ -70,20 +62,14 @@ static ssize_t vfio_device_write(struct file *filep, const char __user *buf,
 {
 	struct vfio_device *device = filep->private_data;
 
-	if (device->ops->write)
-		return device->ops->write(device, buf, count, ppos);
-
-	return -EINVAL;
+	return device->ops->write(device->device_data, buf, count, ppos);
 }
 
 static int vfio_device_mmap(struct file *filep, struct vm_area_struct *vma)
 {
 	struct vfio_device *device = filep->private_data;
 
-	if (device->ops->mmap)
-		return device->ops->mmap(device, vma);
-
-	return -EINVAL;
+	return device->ops->mmap(device->device_data, vma);
 }
 	
 #ifdef CONFIG_COMPAT

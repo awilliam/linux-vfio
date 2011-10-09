@@ -1,9 +1,18 @@
-#include <linux/device.h>
-#include <linux/eventfd.h>
+/*
+ * Copyright (C) 2011 Red Hat, Inc.  All rights reserved.
+ *     Author: Alex Williamson <alex.williamson@redhat.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * Derived from original vfio:
+ * Copyright 2010 Cisco Systems, Inc.  All rights reserved.
+ * Author: Tom Lyon, pugs@cisco.com
+ */
+
 #include <linux/mutex.h>
 #include <linux/pci.h>
-
-#include "vfio_private.h"
 
 #ifndef VFIO_PCI_PRIVATE_H
 #define VFIO_PCI_PRIVATE_H
@@ -15,7 +24,6 @@
 #define VFIO_PCI_OFFSET_MASK	(((u64)(1) << VFIO_PCI_OFFSET_SHIFT) - 1)
 
 struct vfio_pci_device {
-	struct vfio_device	device;
 	struct pci_dev		*pdev;
 	void __iomem		*barmap[PCI_STD_RESOURCE_END + 1];
 	u8			*pci_config_map;
@@ -38,6 +46,7 @@ struct vfio_pci_device {
 	bool			reset_works;
 	struct eoi_eventfd	*ev_eoi;
 	struct pci_saved_state	*pci_saved_state;
+	int			refcnt;
 };
 
 extern irqreturn_t vfio_pci_interrupt(int irq, void *dev_id);

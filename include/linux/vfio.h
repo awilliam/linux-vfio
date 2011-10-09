@@ -27,6 +27,31 @@
  */
 #include <linux/types.h>
 
+#ifndef VFIO_H
+#define VFIO_H
+
+#ifdef __KERNEL__
+
+struct vfio_device_ops {
+	bool			(*match)(struct device *, char *);
+	int			(*get)(void *);
+	void			(*put)(void *);
+	ssize_t			(*read)(void *, char __user *,
+					size_t, loff_t *);
+	ssize_t			(*write)(void *, const char __user *,
+					 size_t, loff_t *);
+	long			(*ioctl)(void *, unsigned int, unsigned long);
+	int			(*mmap)(void *, struct vm_area_struct *);
+};
+
+extern int vfio_group_add_dev(struct device *device,
+			      const struct vfio_device_ops *ops);
+extern void vfio_group_del_dev(struct device *device);
+extern int vfio_bind_dev(struct device *device, void *device_data);
+extern void *vfio_unbind_dev(struct device *device);
+
+#endif /* __KERNEL__ */
+
 /*
  * VFIO driver - allow mapping and use of certain PCI devices
  * in unprivileged user processes. (If IOMMU is present)
@@ -140,3 +165,5 @@ enum {
 	VFIO_PCI_MSIX_IRQ_INDEX,
 	VFIO_PCI_NUM_IRQS
 };
+
+#endif /* VFIO_H */
