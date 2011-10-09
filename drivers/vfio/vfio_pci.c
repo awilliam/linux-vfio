@@ -146,6 +146,23 @@ static void vfio_pci_disable(struct vfio_pci_device *vdev)
 {
 	int bar;
 
+	if (vdev->ev_msix)
+		vfio_pci_drop_msix(vdev);
+	if (vdev->ev_msi)
+		vfio_pci_drop_msi(vdev);
+	if (vdev->ev_irq) {
+		free_irq(vdev->pdev->irq, vdev);
+		eventfd_ctx_put(vdev->ev_irq);
+		vdev->ev_irq = NULL;
+		vdev->irq_disabled = false;
+		vdev->virq_disabled = false;
+	}
+
+	kfree(vdev->vconfig);
+	vdev->vconfig = NULL;
+	kfree(vdev->pci_config_map);
+	vdev->pci_config_map = NULL;
+
 	if (pci_reset_function(vdev->pdev) == 0) {
 		if (pci_load_and_free_saved_state(vdev->pdev,
 						  &vdev->pci_saved_state) != 0)
