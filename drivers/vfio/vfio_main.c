@@ -57,6 +57,7 @@ extern const struct file_operations vfio_iommu_fops;
 struct vfio_group {
 	dev_t			devt;
 	unsigned int		groupid;
+	struct bus_type		*bus;
 	struct vfio_iommu	*iommu;
 	struct list_head	device_list;
 	struct list_head	iommu_next;
@@ -268,7 +269,7 @@ static int __vfio_open_iommu(struct vfio_iommu *iommu)
 	if (iommu->domain)
 		return -EINVAL;
 
-	iommu->domain = iommu_domain_alloc();
+	iommu->domain = iommu_domain_alloc(iommu->bus);
 	if (!iommu->domain)
 		return -EFAULT;
 
@@ -471,6 +472,7 @@ static int vfio_group_open(struct inode *inode, struct file *filep)
 		INIT_LIST_HEAD(&iommu->group_list);
 		INIT_LIST_HEAD(&iommu->dm_list);
 		mutex_init(&iommu->dgate);
+		iommu->bus = group->bus;
 		__vfio_group_set_iommu(group, iommu);
 	}
 	group->refcnt++;
@@ -516,7 +518,8 @@ static int vfio_group_merge(struct vfio_group *group, int fd)
 
 	new = file->private_data;
 
-	if (!new || new == group || !new->iommu || new->iommu->domain) {
+	if (!new || new == group || !new->iommu ||
+	    new->iommu->domain || new->bus != group->bus) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -585,6 +588,7 @@ static int vfio_group_unmerge(struct vfio_group *group, int fd)
 	INIT_LIST_HEAD(&new_iommu->group_list);
 	INIT_LIST_HEAD(&new_iommu->dm_list);
 	mutex_init(&new_iommu->dgate);
+	new_iommu->bus = group->bus;
 
 	mutex_lock(&vfio.lock);
 
@@ -853,9 +857,19 @@ int vfio_group_add_dev(struct device *dev, const struct vfio_device_ops *ops)
 		device_create(vfio.class, NULL, group->devt,
 			      group, "%u", groupid);
 
+		group->bus = dev->bus;
 		list_add(&group->group_next, &vfio.group_list);
 		new_group = true;
 	} else {
+		if (group->bus != dev->bus) {
+			printk(KERN_WARNING
+			       "Error: IOMMU group ID conflict.  Group ID %u "
+				"on both bus %s and %s\n", groupid,
+				group->bus->name, dev->bus->name);
+			ret = -EFAULT;
+			goto out;
+		}
+
 		list_for_each(pos, &group->device_list) {
 			device = list_entry(pos,
 					    struct vfio_device, device_next);

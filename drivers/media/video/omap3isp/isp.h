@@ -32,6 +32,7 @@
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/wait.h>
+#include <linux/iommu.h>
 #include <plat/iommu.h>
 #include <plat/iovmm.h>
 
@@ -139,6 +140,10 @@ struct isp_reg {
  *		3 - CAMEXT[13:6] -> CAM[7:0]
  * @clk_pol: Pixel clock polarity
  *		0 - Non Inverted, 1 - Inverted
+ * @hs_pol: Horizontal synchronization polarity
+ *		0 - Active high, 1 - Active low
+ * @vs_pol: Vertical synchronization polarity
+ *		0 - Active high, 1 - Active low
  * @bridge: CCDC Bridge input control
  *		ISPCTRL_PAR_BRIDGE_DISABLE - Disable
  *		ISPCTRL_PAR_BRIDGE_LENDIAN - Little endian
@@ -147,6 +152,8 @@ struct isp_reg {
 struct isp_parallel_platform_data {
 	unsigned int data_lane_shift:2;
 	unsigned int clk_pol:1;
+	unsigned int hs_pol:1;
+	unsigned int vs_pol:1;
 	unsigned int bridge:4;
 };
 
@@ -288,7 +295,9 @@ struct isp_device {
 	unsigned int sbl_resources;
 	unsigned int subclk_resources;
 
-	struct iommu *iommu;
+	struct omap_iommu *iommu;
+	struct iommu_domain *domain;
+	struct device *iommu_dev;
 
 	struct isp_platform_callback platform_cb;
 };

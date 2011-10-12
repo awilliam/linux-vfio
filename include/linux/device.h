@@ -22,7 +22,7 @@
 #include <linux/types.h>
 #include <linux/module.h>
 #include <linux/pm.h>
-#include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/device.h>
 
 struct device;
@@ -33,6 +33,7 @@ struct class;
 struct subsys_private;
 struct bus_type;
 struct device_node;
+struct iommu_ops;
 
 struct bus_attribute {
 	struct attribute	attr;
@@ -67,6 +68,9 @@ extern void bus_remove_file(struct bus_type *, struct bus_attribute *);
  * @resume:	Called to bring a device on this bus out of sleep mode.
  * @pm:		Power management operations of this bus, callback the specific
  *		device driver's pm-ops.
+ * @iommu_ops   IOMMU specific operations for this bus, used to attach IOMMU
+ *              driver implementations to a bus and allow the driver to do
+ *              bus-specific setup
  * @p:		The private data of the driver core, only the driver core can
  *		touch this.
  *
@@ -95,6 +99,8 @@ struct bus_type {
 	int (*resume)(struct device *dev);
 
 	const struct dev_pm_ops *pm;
+
+	struct iommu_ops *iommu_ops;
 
 	struct subsys_private *p;
 };
@@ -516,7 +522,7 @@ struct device_dma_parameters {
  * 		minimizes board-specific #ifdefs in drivers.
  * @power:	For device power management.
  * 		See Documentation/power/devices.txt for details.
- * @pwr_domain:	Provide callbacks that are executed during system suspend,
+ * @pm_domain:	Provide callbacks that are executed during system suspend,
  * 		hibernation, system resume and during runtime PM transitions
  * 		along with subsystem-level and driver-level callbacks.
  * @numa_node:	NUMA node this device is close to.
@@ -567,7 +573,7 @@ struct device {
 	void		*platform_data;	/* Platform specific data, device
 					   core doesn't touch it */
 	struct dev_pm_info	power;
-	struct dev_power_domain	*pwr_domain;
+	struct dev_pm_domain	*pm_domain;
 
 #ifdef CONFIG_NUMA
 	int		numa_node;	/* NUMA node this device is close to */

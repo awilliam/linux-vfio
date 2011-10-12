@@ -30,6 +30,12 @@
 #include <linux/iommu.h>
 #include <linux/intel-iommu.h>
 
+static int allow_unsafe_assigned_interrupts;
+module_param_named(allow_unsafe_assigned_interrupts,
+		   allow_unsafe_assigned_interrupts, bool, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(allow_unsafe_assigned_interrupts,
+ "Enable device assignment on platforms without interrupt remapping support.");
+
 static int kvm_iommu_unmap_memslots(struct kvm *kvm);
 static void kvm_iommu_put_pages(struct kvm *kvm,
 				gfn_t base_gfn, unsigned long npages);
@@ -222,14 +228,26 @@ int kvm_iommu_map_guest(struct kvm *kvm)
 {
 	int r;
 
-	if (!iommu_found()) {
+	if (!iommu_present(&pci_bus_type)) {
 		printk(KERN_ERR "%s: iommu not found\n", __func__);
 		return -ENODEV;
 	}
 
-	kvm->arch.iommu_domain = iommu_domain_alloc();
+	kvm->arch.iommu_domain = iommu_domain_alloc(&pci_bus_type);
 	if (!kvm->arch.iommu_domain)
 		return -ENOMEM;
+
+	if (!allow_unsafe_assigned_interrupts &&
+	    !iommu_domain_has_cap(kvm->arch.iommu_domain,
+				  IOMMU_CAP_INTR_REMAP)) {
+		printk(KERN_WARNING "%s: No interrupt remapping support,"
+		       " disallowing device assignment."
+		       " Re-enble with \"allow_unsafe_assigned_interrupts=1\""
+		       " module option.\n", __func__);
+		iommu_domain_free(kvm->arch.iommu_domain);
+		kvm->arch.iommu_domain = NULL;
+		return -EPERM;
+	}
 
 	r = kvm_iommu_map_memslots(kvm);
 	if (r)

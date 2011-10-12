@@ -19,6 +19,7 @@
 
 struct vfio_iommu {
 	struct iommu_domain		*domain;
+	struct bus_type			*bus;
 	struct mutex			dgate;
 	struct list_head		dm_list;
 	struct mm_struct		*mm;
