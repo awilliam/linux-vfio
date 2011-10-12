@@ -1,5 +1,5 @@
 
-vfio-y := vfio_main.o vfio_iommu.o vfio_device.o
+vfio-y := vfio_main.o vfio_iommu.o
 vfio-pci-y := vfio_pci.o vfio_pci_intrs.o vfio_pci_rdwr.o vfio_pci_config.o
 
 obj-$(CONFIG_VFIO) := vfio.o

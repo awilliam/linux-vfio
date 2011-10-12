@@ -17,17 +17,6 @@
 #ifndef VFIO_PRIVATE_H
 #define VFIO_PRIVATE_H
 
-struct vfio_device {
-	struct device			*dev;
-	const struct vfio_device_ops	*ops;
-	struct vfio_iommu		*iommu;
-	struct vfio_group		*group;
-	struct list_head		device_next;
-	bool				attached;
-	int				refcnt;
-	void				*device_data;
-};
-
 struct vfio_iommu {
 	struct iommu_domain		*domain;
 	struct mutex			dgate;
