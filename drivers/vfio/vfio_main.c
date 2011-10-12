@@ -711,10 +711,13 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 					goto out;
 				}
 
-				/* Is this legal? Is there an API to do this?
- 				 * Without this, we get illegal seek errors. */
+				/* Todo: add an anon_inode interface to do
+				 * this.  Appears to be missing by lack of
+				 * need rather than explicitly prevented.
+				 * Now there's need. */
 				file->f_mode |= (FMODE_LSEEK |
-						 FMODE_PREAD | FMODE_PWRITE);
+						 FMODE_PREAD |
+						 FMODE_PWRITE);
 
 				fd_install(ret, file);
 
