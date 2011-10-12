@@ -371,10 +371,10 @@ int vfio_dma_unmap_dm(struct vfio_iommu *iommu, struct vfio_dma_map *dmp)
 
 int vfio_dma_map_dm(struct vfio_iommu *iommu, struct vfio_dma_map *dmp)
 {
-	int npage, locked, lock_limit;
+	int npage;
 	struct dma_map_page *mlp, *mmlp = NULL;
 	dma_addr_t daddr = dmp->dmaaddr;
-	unsigned long vaddr = dmp->vaddr;
+	unsigned long locked, lock_limit, vaddr = dmp->vaddr;
 	size_t size = dmp->size;
 	int ret = 0, rdwr = dmp->flags & VFIO_DMA_MAP_FLAG_WRITE;
 
@@ -400,12 +400,11 @@ int vfio_dma_map_dm(struct vfio_iommu *iommu, struct vfio_dma_map *dmp)
 	}
 
 	/* account for locked pages */
-	locked = npage + current->mm->locked_vm;
-	// XXX This doesn't work, non-priv user gets stuck here
+	locked = current->mm->locked_vm + npage;
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
-	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
-		printk(KERN_WARNING "%s: RLIMIT_MEMLOCK exceeded\n",
-			__func__);
+	if (locked > lock_limit && !capable(CAP_IPC_LOCK)) {
+		printk(KERN_WARNING "%s: RLIMIT_MEMLOCK (%ld) exceeded\n",
+			__func__, rlimit(RLIMIT_MEMLOCK));
 		ret = -ENOMEM;
 		goto out_lock;
 	}
