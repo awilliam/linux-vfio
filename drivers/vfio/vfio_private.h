@@ -26,5 +26,8 @@ struct vfio_iommu {
 	int				refcnt;
 	bool				cache;
 };
-	
+
+extern int vfio_release_iommu(struct vfio_iommu *iommu);
+extern void vfio_iommu_unmapall(struct vfio_iommu *iommu);
+
 #endif /* VFIO_PRIVATE_H */

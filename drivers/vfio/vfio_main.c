@@ -247,6 +247,9 @@ static void __vfio_close_iommu(struct vfio_iommu *iommu)
 
 		__vfio_iommu_detach_group(iommu, group);
 	}
+
+	vfio_iommu_unmapall(iommu);
+
 	iommu_domain_free(iommu->domain);
 	iommu->domain = NULL;
 	iommu->mm = NULL;

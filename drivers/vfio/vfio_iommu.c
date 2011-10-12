@@ -1,4 +1,6 @@
 /*
+ * VFIO: IOMMU DMA mapping support
+ *
  * Copyright (C) 2011 Red Hat, Inc.  All rights reserved.
  *     Author: Alex Williamson <alex.williamson@redhat.com>
  *
@@ -9,10 +11,6 @@
  * Derived from original vfio:
  * Copyright 2010 Cisco Systems, Inc.  All rights reserved.
  * Author: Tom Lyon, pugs@cisco.com
- */
-
-/*
- * VFIO iomm module: iommu fd callbacks
  */
 
 #include <linux/compat.h>
@@ -28,8 +26,6 @@
 #include <linux/workqueue.h>
 
 #include "vfio_private.h"
-
-extern int vfio_release_iommu(struct vfio_iommu *iommu);
 
 struct dma_map_page {
 	struct list_head	list;
@@ -169,9 +165,8 @@ static void vfio_dma_unmap(struct vfio_iommu *iommu, unsigned long iova,
 	vfio_lock_acct(-unlocked);
 }
 
-#if 0
 /* Unmap ALL DMA regions */
-static void vfio_dma_unmapall(struct vfio_iommu *iommu)
+void vfio_iommu_unmapall(struct vfio_iommu *iommu)
 {
 	struct list_head *pos, *pos2;
 	struct dma_map_page *mlp;
@@ -185,7 +180,6 @@ static void vfio_dma_unmapall(struct vfio_iommu *iommu)
 	}
 	mutex_unlock(&iommu->dgate);
 }
-#endif
 
 static int vaddr_get_pfn(unsigned long vaddr, int rdwr, unsigned long *pfn)
 {
@@ -529,4 +523,3 @@ const struct file_operations vfio_iommu_fops = {
 	.compat_ioctl	= vfio_iommu_compat_ioctl,
 #endif
 };
-
