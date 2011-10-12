@@ -401,6 +401,7 @@ int vfio_dma_map_dm(struct vfio_iommu *iommu, struct vfio_dma_map *dmp)
 
 	/* account for locked pages */
 	locked = npage + current->mm->locked_vm;
+	// XXX This doesn't work, non-priv user gets stuck here
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
 		printk(KERN_WARNING "%s: RLIMIT_MEMLOCK exceeded\n",
