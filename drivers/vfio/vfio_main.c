@@ -736,43 +736,51 @@ static long vfio_group_unl_ioctl(struct file *filep,
 {
 	struct vfio_group *group = filep->private_data;
 
-	/* Restrict ioctl access to mm association.  If we add "harmless"
-	 * ioctls later, this will need to move. */
+	if (cmd == VFIO_GROUP_GET_FLAGS) {
+		u64 flags = 0;
+
+		mutex_lock(&vfio.lock);
+		if (__vfio_iommu_viable(group->iommu))
+			flags |= VFIO_GROUP_FLAGS_VIABLE;
+		mutex_unlock(&vfio.lock);
+
+		if (group->iommu->mm)
+			flags |= VFIO_GROUP_FLAGS_MM_LOCKED;
+
+		return put_user(flags, (u64 __user *)arg);
+	}
+		
+	/* Below commands are restricted once the mm is set */
 	if (group->iommu->mm && group->iommu->mm != current->mm)
 		return -EPERM;
 
-	switch (cmd) {
-	case VFIO_GROUP_MERGE:
-	case VFIO_GROUP_UNMERGE:
-		{
-			int fd;
+	if (cmd == VFIO_GROUP_MERGE || cmd == VFIO_GROUP_UNMERGE) {
+		int fd;
 		
-			if (get_user(fd, (int __user *)arg))
-				return -EFAULT;
-			if (fd < 0)
-				return -EINVAL;
+		if (get_user(fd, (int __user *)arg))
+			return -EFAULT;
+		if (fd < 0)
+			return -EINVAL;
 
-			if (cmd == VFIO_GROUP_MERGE)
-				return vfio_group_merge(group, fd);
-			else
-				return vfio_group_unmerge(group, fd);
-		}
-	case VFIO_GROUP_GET_IOMMU_FD:
+		if (cmd == VFIO_GROUP_MERGE)
+			return vfio_group_merge(group, fd);
+		else
+			return vfio_group_unmerge(group, fd);
+	} else if (cmd == VFIO_GROUP_GET_IOMMU_FD) {
 		return vfio_group_get_iommu_fd(group);
-	case VFIO_GROUP_GET_DEVICE_FD:
-		{
-			char *buf;
-			int ret;
+	} else if (cmd == VFIO_GROUP_GET_DEVICE_FD) {
+		char *buf;
+		int ret;
 
-			buf = strndup_user((const char __user *)arg, PAGE_SIZE);
-			if (IS_ERR(buf))
-				return PTR_ERR(buf);
+		buf = strndup_user((const char __user *)arg, PAGE_SIZE);
+		if (IS_ERR(buf))
+			return PTR_ERR(buf);
 
-			ret = vfio_group_get_device_fd(group, buf);
-			kfree(buf);
-			return ret;
-		}
+		ret = vfio_group_get_device_fd(group, buf);
+		kfree(buf);
+		return ret;
 	}
+
 	return -ENOSYS;
 }
 

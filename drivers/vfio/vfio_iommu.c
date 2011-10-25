@@ -479,11 +479,16 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 				 unsigned int cmd, unsigned long arg)
 {
 	struct vfio_iommu *iommu = filep->private_data;
-	struct vfio_dma_map dm;
 	int ret = -ENOSYS;
 
-	switch (cmd) {
-	case VFIO_IOMMU_MAP_DMA:
+        if (cmd == VFIO_IOMMU_GET_FLAGS) {
+                u64 flags = VFIO_IOMMU_FLAGS_MAP_ANY;
+
+                ret = put_user(flags, (u64 __user *)arg);
+
+        } else if (cmd == VFIO_IOMMU_MAP_DMA) {
+		struct vfio_dma_map dm;
+
 		if (copy_from_user(&dm, (void __user *)arg, sizeof dm))
 			return -EFAULT;
 
@@ -491,9 +496,10 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 
 		if (!ret && copy_to_user((void __user *)arg, &dm, sizeof dm))
 			ret = -EFAULT;
-		break;
 
-	case VFIO_IOMMU_UNMAP_DMA:
+	} else if (cmd == VFIO_IOMMU_UNMAP_DMA) {
+		struct vfio_dma_map dm;
+
 		if (copy_from_user(&dm, (void __user *)arg, sizeof dm))
 			return -EFAULT;
 
@@ -501,7 +507,6 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 
 		if (!ret && copy_to_user((void __user *)arg, &dm, sizeof dm))
 			ret = -EFAULT;
-		break;
 	}
 	return ret;
 }

@@ -61,6 +61,9 @@ extern void *vfio_unbind_dev(struct device *device);
 
 /* Kernel & User level defines for ioctls */
 
+#define VFIO_GROUP_GET_FLAGS		_IOR(';', 100, __u64)
+ #define VFIO_GROUP_FLAGS_VIABLE	(1 << 0)
+ #define VFIO_GROUP_FLAGS_MM_LOCKED	(1 << 1)
 #define VFIO_GROUP_MERGE		_IOW(';', 101, int)
 #define VFIO_GROUP_UNMERGE		_IOW(';', 102, int)
 #define VFIO_GROUP_GET_IOMMU_FD		_IO(';', 103)
@@ -79,14 +82,17 @@ struct vfio_dma_map {
 #define	VFIO_DMA_MAP_FLAG_WRITE		(1 << 0) /* req writeable DMA mem */
 };
 
-#define	VFIO_IOMMU_MAP_DMA		_IOWR(';', 105, struct vfio_dma_map)
-#define	VFIO_IOMMU_UNMAP_DMA		_IOWR(';', 106, struct vfio_dma_map)
+#define	VFIO_IOMMU_GET_FLAGS		_IOR(';', 105, __u64)
+ /* Does the IOMMU support mapping any IOVA to any virtual address? */
+ #define VFIO_IOMMU_FLAGS_MAP_ANY	(1 << 0)
+#define	VFIO_IOMMU_MAP_DMA		_IOWR(';', 106, struct vfio_dma_map)
+#define	VFIO_IOMMU_UNMAP_DMA		_IOWR(';', 107, struct vfio_dma_map)
 
-#define VFIO_DEVICE_GET_FLAGS		_IOR(';', 107, __u64)
+#define VFIO_DEVICE_GET_FLAGS		_IOR(';', 108, __u64)
  #define VFIO_DEVICE_FLAGS_PCI		(1 << 0)
  #define VFIO_DEVICE_FLAGS_DT		(1 << 1)
  #define VFIO_DEVICE_FLAGS_RESET	(1 << 2)
-#define VFIO_DEVICE_GET_NUM_REGIONS	_IOR(';', 108, int)
+#define VFIO_DEVICE_GET_NUM_REGIONS	_IOR(';', 109, int)
 
 struct vfio_region_info {
 	__u32	len;		/* length of structure */
@@ -100,30 +106,30 @@ struct vfio_region_info {
 	__u64	phys;		/* physical address of region */
 };
 
-#define VFIO_DEVICE_GET_REGION_INFO	_IOWR(';', 109, struct vfio_region_info)
+#define VFIO_DEVICE_GET_REGION_INFO	_IOWR(';', 110, struct vfio_region_info)
 
-#define VFIO_DEVICE_GET_NUM_IRQS	_IOR(';', 110, int)
+#define VFIO_DEVICE_GET_NUM_IRQS	_IOR(';', 111, int)
 
 struct vfio_irq_info {
 	__u32	len;		/* length of structure */
 	__u32	index;		/* IRQ number */
 	__u32	count;		/* number of individual IRQs */
-	__u64	flags;
+	__u32	flags;
 #define VFIO_IRQ_INFO_FLAG_LEVEL		(1 << 0)
 };
 
-#define VFIO_DEVICE_GET_IRQ_INFO	_IOWR(';', 111, struct vfio_irq_info)
+#define VFIO_DEVICE_GET_IRQ_INFO	_IOWR(';', 112, struct vfio_irq_info)
 
 /* Set IRQ eventfds, arg[0] = index, arg[1] = count, arg[2-n] = eventfds */
-#define VFIO_DEVICE_SET_IRQ_EVENTFDS	_IOW(';', 112, int)
+#define VFIO_DEVICE_SET_IRQ_EVENTFDS	_IOW(';', 113, int)
 
 /* Unmask IRQ index, arg[0] = index */
-#define VFIO_DEVICE_UNMASK_IRQ		_IOW(';', 113, int)
+#define VFIO_DEVICE_UNMASK_IRQ		_IOW(';', 114, int)
 
 /* Set unmask eventfd, arg[0] = index, arg[1] = eventfd */
-#define VFIO_DEVICE_SET_UNMASK_IRQ_EVENTFD	_IOW(';', 114, int)
+#define VFIO_DEVICE_SET_UNMASK_IRQ_EVENTFD	_IOW(';', 115, int)
 
-#define VFIO_DEVICE_RESET		_IO(';', 115)
+#define VFIO_DEVICE_RESET		_IO(';', 116)
 
 struct vfio_dtpath {
 	__u32	len;		/* length of structure */
@@ -133,7 +139,7 @@ struct vfio_dtpath {
 #define VFIO_DTPATH_FLAGS_IRQ		(1 << 1)
 	char	*path;
 };
-#define VFIO_DEVICE_GET_DTPATH		_IOWR(';', 116, struct vfio_dtpath)
+#define VFIO_DEVICE_GET_DTPATH		_IOWR(';', 117, struct vfio_dtpath)
 
 struct vfio_dtindex {
 	__u32	len;		/* length of structure */
@@ -144,7 +150,7 @@ struct vfio_dtindex {
 #define VFIO_DTINDEX_FLAGS_REGION	(1 << 0)
 #define VFIO_DTINDEX_FLAGS_IRQ		(1 << 1)
 };
-#define VFIO_DEVICE_GET_DTINDEX		_IOWR(';', 117, struct vfio_dtindex)
+#define VFIO_DEVICE_GET_DTINDEX		_IOWR(';', 118, struct vfio_dtindex)
 
 /* PCI devices have a fixed region and irq mapping */
 enum {
