@@ -1,11 +1,16 @@
 menuconfig VFIO
-	tristate "VFIO Non-Privileged User Space driver"
+	tristate "VFIO Non-Privileged userspace driver framework"
 	depends on IOMMU_API
 	help
+	  VFIO provides a framework for secure userspace device drivers.
+	  See Documentation/vfio.txt for more details.
+
 	  If you don't know what to do here, say N.
 
 menuconfig VFIO_PCI
 	tristate "VFIO support for PCI devices"
 	depends on VFIO && PCI
 	help
+	  Support for the PCI VFIO bus driver.  This is required to make		  use of PCI drivers using the VFIO framework.
+
 	  If you don't know what to do here, say N.
