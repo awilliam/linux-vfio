@@ -25,8 +25,60 @@
 #include <linux/errno.h>
 #include <linux/iommu.h>
 
+static ssize_t show_iommu_group(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	unsigned int groupid;
+
+	if (iommu_device_group(dev, &groupid))
+		return 0;
+
+	return sprintf(buf, "%u", groupid);
+}
+static DEVICE_ATTR(iommu_group, S_IRUGO, show_iommu_group, NULL);
+
+static int add_remove_iommu_group(struct device *dev, void *data)
+{
+	unsigned int groupid;
+	int add = *(int *)data;
+
+	if (iommu_device_group(dev, &groupid) == 0) {
+		if (add)
+			return device_create_file(dev, &dev_attr_iommu_group);
+		else
+			device_remove_file(dev, &dev_attr_iommu_group);
+	}
+
+	return 0;
+}
+
+static int iommu_device_notifier(struct notifier_block *nb,
+				 unsigned long action, void *data)
+{
+	struct device *dev = data;
+	int add;
+
+	if (action == BUS_NOTIFY_ADD_DEVICE) {
+		add = 1;
+		return add_remove_iommu_group(dev, &add);
+	} else if (action == BUS_NOTIFY_DEL_DEVICE) {
+		add = 0;
+		return add_remove_iommu_group(dev, &add);
+	}
+
+	return 0;
+}
+
+static struct notifier_block iommu_device_nb = {
+	.notifier_call = iommu_device_notifier,
+};
+
 static void iommu_bus_init(struct bus_type *bus, struct iommu_ops *ops)
 {
+	int add = 1;
+
+	bus_register_notifier(bus, &iommu_device_nb);
+	bus_for_each_dev(bus, NULL, &add, add_remove_iommu_group);
 }
 
 /**
@@ -186,3 +238,12 @@ int iommu_unmap(struct iommu_domain *domain, unsigned long iova, int gfp_order)
 	return domain->ops->unmap(domain, iova, gfp_order);
 }
 EXPORT_SYMBOL_GPL(iommu_unmap);
+
+int iommu_device_group(struct device *dev, unsigned int *groupid)
+{
+	if (iommu_present(dev->bus) && dev->bus->iommu_ops->device_group)
+		return dev->bus->iommu_ops->device_group(dev, groupid);
+
+	return -ENODEV;
+}
+EXPORT_SYMBOL_GPL(iommu_device_group);
