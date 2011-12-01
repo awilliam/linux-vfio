@@ -2794,6 +2794,13 @@ static int amd_iommu_device_group(struct device *dev, unsigned int *groupid)
 	struct pci_dev *pdev = to_pci_dev(dev);
 	u16 devid;
 
+	if (!iommu_group_unsafe_msi) {
+		printk_once(KERN_NOTICE "%s: "
+			    "IOMMU device group disabled without interrupt remapping support",
+			    pci_bus_type.name);
+		return -ENODEV;
+	}
+
 	if (!dev_data)
 		return -ENODEV;
 
