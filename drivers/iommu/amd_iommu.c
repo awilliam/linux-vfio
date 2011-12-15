@@ -1982,9 +1982,9 @@ static int pri_reset_while_enabled(struct pci_dev *pdev)
 	if (!pos)
 		return -EINVAL;
 
-	pci_read_config_word(pdev, pos + PCI_PRI_CONTROL_OFF, &control);
-	control |= PCI_PRI_RESET;
-	pci_write_config_word(pdev, pos + PCI_PRI_CONTROL_OFF, control);
+	pci_read_config_word(pdev, pos + PCI_PRI_CTRL, &control);
+	control |= PCI_PRI_CTRL_RESET;
+	pci_write_config_word(pdev, pos + PCI_PRI_CTRL, control);
 
 	return 0;
 }
@@ -2046,7 +2046,7 @@ bool pci_pri_tlp_required(struct pci_dev *pdev)
 	if (!pos)
 		return false;
 
-	pci_read_config_word(pdev, pos + PCI_PRI_CONTROL_OFF, &control);
+	pci_read_config_word(pdev, pos + PCI_PRI_CTRL, &control);
 
 	return (control & PCI_PRI_TLP_OFF) ? true : false;
 }
