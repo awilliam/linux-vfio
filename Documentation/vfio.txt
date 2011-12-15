@@ -1,0 +1,316 @@
+VFIO - "Virtual Function I/O"[1]
+-------------------------------------------------------------------------------
+Many modern system now provide DMA and interrupt remapping facilities
+to help ensure I/O devices behave within the boundaries they've been
+allotted.  This includes x86 hardware with AMD-Vi and Intel VT-d,
+POWER systems with Partitionable Endpoints (PEs) and embedded powerpc
+systems such as Freescale PAMU.  The VFIO driver is an IOMMU/device
+agnostic framework for exposing direct device access to userspace, in
+a secure, IOMMU protected environment.  In other words, this allows
+safe[2], non-privileged, userspace drivers.
+
+Why do we want that?  Virtual machines often make use of direct device
+access ("device assignment") when configured for the highest possible
+I/O performance.  From a device and host perspective, this simply turns
+the VM into a userspace driver, with the benefits of significantly
+reduced latency, higher bandwidth, and direct use of bare-metal device
+drivers[3].
+
+Some applications, particularly in the high performance computing
+field, also benefit from low-overhead, direct device access from
+userspace.  Examples include network adapters (often non-TCP/IP based)
+and compute accelerators.  Prior to VFIO, these drivers had to either
+go through the full development cycle to become proper upstream driver,
+be maintained out of tree, or make use of the UIO framework, which
+has no notion of IOMMU protection, limited interrupt support, and
+requires root privileges to access things like PCI configuration space.
+
+The VFIO driver framework intends to unify these, replacing both the
+KVM PCI specific device assignment code as well as provide a more
+secure, more featureful userspace driver environment than UIO.
+
+Groups, Devices, IOMMUs, oh my
+-------------------------------------------------------------------------------
+
+A fundamental component of VFIO is the notion of IOMMU groups.  IOMMUs
+can't always distinguish transactions from each individual device in
+the system.  Sometimes this is because of the IOMMU design, such as with
+PEs, other times it's caused by the I/O topology, for instance a
+PCIe-to-PCI bridge masking all devices behind it.  We call the sets of
+devices created by these restrictions IOMMU groups (or just "groups" for
+this document).
+
+The IOMMU cannot distinguish transactions between the individual devices
+within the group, therefore the group is the basic unit of ownership for
+a userspace process.  Because of this, groups are also the primary
+interface to both devices and IOMMU domains in VFIO.
+
+The VFIO representation of groups is created as devices are added into
+the framework by a VFIO bus driver.  The vfio-pci module is an example
+of a bus driver.  This module registers devices along with a set of bus
+specific callbacks with the VFIO core.  These callbacks provide the
+interfaces later used for device access.  As each new group is created
+(as determined by iommu_device_group()) VFIO creates a new
+/dev/vfio/$BUS/$GROUP character device.
+
+In addition to the device enumeration and callbacks, the VFIO bus driver
+also provides a traditional device driver and is able to bind to devices
+on it's bus.  When a device is bound to the bus driver it's available to
+VFIO.  When all the devices within a group are bound to their vfio bus
+drivers, the group becomes "viable" and a user with sufficient access to
+the VFIO group chardev can obtain exclusive access to the set of group
+devices.
+
+As documented in linux/vfio.h, several ioctls are provided on the
+group chardev:
+
+#define VFIO_GROUP_GET_FLAGS            _IOR(';', 100, __u64)
+ #define VFIO_GROUP_FLAGS_VIABLE        (1 << 0)
+ #define VFIO_GROUP_FLAGS_MM_LOCKED     (1 << 1)
+#define VFIO_GROUP_MERGE                _IOW(';', 101, int)
+#define VFIO_GROUP_UNMERGE              _IOW(';', 102, int)
+#define VFIO_GROUP_GET_IOMMU_FD         _IO(';', 103)
+#define VFIO_GROUP_GET_DEVICE_FD        _IOW(';', 104, char *)
+
+The last two ioctls return new file descriptors for accessing
+individual devices within the group and programming the IOMMU.  Each of
+these new file descriptors provide their own set of file interfaces.
+These ioctls will fail if any of the devices within the group are not
+bound to their VFIO bus driver.  Additionally, when either of these
+interfaces are used, the group is then bound to the struct_mm of the
+caller.  The GET_FLAGS ioctl can be used to view the state of the group.
+
+When either the GET_IOMMU_FD or GET_DEVICE_FD ioctls are invoked, a
+new IOMMU domain is created and all of the devices in the group are
+attached to it.  This is the only way to ensure full IOMMU isolation
+of the group, but potentially wastes resources and cycles if the user
+intends to manage multiple groups with the same set of IOMMU mappings.
+VFIO therefore provides a group MERGE and UNMERGE interface, which
+allows multiple groups to share an IOMMU domain.  Not all IOMMUs allow
+arbitrary groups to be merged, so the user should assume merging is
+opportunistic.  A new group, with no open device or IOMMU file
+descriptors, can be merged into an existing, in-use, group using the
+MERGE ioctl.  A merged group can be unmerged using the UNMERGE ioctl
+once all of the device file descriptors for the group being merged
+"out" are closed.
+
+When groups are merged, the GET_IOMMU_FD and GET_DEVICE_FD ioctls are
+essentially fungible between group file descriptors (ie. if device A
+is in group X, and X is merged with Y, a file descriptor for A can be
+retrieved using GET_DEVICE_FD on Y.  Likewise, GET_IOMMU_FD returns a
+file descriptor referencing the same internal IOMMU object from either
+X or Y).  Merged groups can be dissolved either explicitly with UNMERGE
+or automatically when ALL file descriptors for the merged group are
+closed (all IOMMUs, all devices, all groups).
+
+The IOMMU file descriptor provides this set of ioctls:
+
+#define VFIO_IOMMU_GET_FLAGS            _IOR(';', 105, __u64)
+ #define VFIO_IOMMU_FLAGS_MAP_ANY       (1 << 0)
+#define VFIO_IOMMU_MAP_DMA              _IOWR(';', 106, struct vfio_dma_map)
+#define VFIO_IOMMU_UNMAP_DMA            _IOWR(';', 107, struct vfio_dma_map)
+
+The GET_FLAGS ioctl returns basic information about the IOMMU domain.
+We currently only support IOMMU domains that are able to map any
+64-bit IOVA to any memory page.  This is indicated by the MAP_ANY flag.
+
+The (UN)MAP_DMA commands make use of struct vfio_dma_map for mapping
+and unmapping IOVAs to process virtual addresses:
+
+struct vfio_dma_map {
+        __u64   len;            /* length of structure */
+        __u64   vaddr;          /* process virtual address */
+        __u64   iova;           /* dma address */
+        __u64   size;           /* size in bytes */
+        __u64   flags;
+#define VFIO_DMA_MAP_FLAG_READ          (1 << 0) /* readable from device */
+#define VFIO_DMA_MAP_FLAG_WRITE         (1 << 1) /* writable from device */
+};
+
+On mapping, vaddr, iova, and size are required, for unmapping, iova
+and size are required.
+
+Current users of VFIO use relatively static DMA mappings, not requiring
+high frequency turnover.  As new users are added, it's expected that the
+IOMMU file descriptor will evolve to support new mapping interfaces, this
+will be reflected in the flags and may present new ioctls and file
+(read/write/mmap) interfaces.
+
+The device GET_FLAGS ioctl is intended to return basic device type and
+indicate support for optional capabilities.  RESET is an optional
+capability.  Flags to indicate PCI device type or Device Tree device
+type are expected to be defined as those bus drivers are added.
+
+#define VFIO_DEVICE_GET_FLAGS           _IOR(';', 108, __u64)
+ #define VFIO_DEVICE_FLAGS_RESET        (1 << 0)
+
+The MMIO and IO Port resources used by a device are described by regions.
+The GET_NUM_REGIONS ioctl tells us how many regions the device supports:
+
+#define VFIO_DEVICE_GET_NUM_REGIONS     _IOR(';', 109, int)
+
+Regions are described by a struct vfio_region_info, which is retrieved
+using the GET_REGION_INFO ioctl with vfio_region_info.index field set to
+the desired region (0-based index).  Note that bus drivers may include
+zero sized, "place holder" regions to enable fixed index to device specifc
+region mapping.  For instance, vfio-pci is expected to statically report
+8 regions, with index mappings 0-5 = BAR 0-5, 6 = ROM, 7 = config space,
+using size = 0 to indicate unimplemented BARs or ROM.
+
+struct vfio_region_info {
+        __u32   len;            /* length of structure */
+        __u32   index;          /* region number */
+        __u64   size;           /* size in bytes of region */
+        __u64   offset;         /* start offset of region */
+        __u64   flags;
+#define VFIO_REGION_INFO_FLAG_MMAP              (1 << 0)
+#define VFIO_REGION_INFO_FLAG_RO                (1 << 1)
+};
+
+#define VFIO_DEVICE_GET_REGION_INFO     _IOWR(';', 110, struct vfio_region_info)
+
+The offset indicates the offset into the device file descriptor which
+accesses the given range (for read/write/mmap/seek).  Flags indicate the
+available access types (MMAP indicates the regions supports mmap and RO
+indicates the region is read-only, such as ROM space).
+
+Interrupts are described using a similar interface.  GET_NUM_IRQS
+reports the number or IRQ indexes for the device.
+
+#define VFIO_DEVICE_GET_NUM_IRQS        _IOR(';', 111, int)
+
+Information about each index can be retrieved using the GET_IRQ_INFO ioctl.
+As with GET_REGION_INFO, GET_IRQ_INFO requires the caller to provide the
+0-based index and fills in the flags and count for that index.  Note that
+value of index is does not reflect the physical device vector number or
+GSI, it's only an enumeration index.
+
+struct vfio_irq_info {
+        __u32   len;            /* length of structure */
+        __u32   index;          /* IRQ index */
+        __u64   flags;
+#define VFIO_IRQ_INFO_FLAG_LEVEL                (1 << 0)
+        __u32   count;          /* number of individual IRQs */
+};
+
+#define VFIO_DEVICE_GET_IRQ_INFO        _IOWR(';', 112, struct vfio_irq_info)
+
+Just as with regions, zero count, "place holder" indexes can be defined
+to allow bus drivers to report static index mapping.  For instance,
+PCI uses {0, 1, 2} = {INTx, MSI, MSIX}, and uses the count field to
+indicate number of vectors (0 for interrupt types that are unimplemented
+on the device).
+
+The LEVEL flag indicates a level triggered interrupt, when clear the
+interrupt is edge triggered.
+
+All VFIO interrupts are signaled to userspace via eventfds.  Integer arrays,
+as shown below, are used to pass the IRQ info index, the number of eventfds,
+and each eventfd to be signaled.  Using a count of 0 disables the interrupt.
+
+/* Set IRQ eventfds, arg[0] = index, arg[1] = count, arg[2-n] = eventfds */
+#define VFIO_DEVICE_SET_IRQ_EVENTFDS    _IOW(';', 113, int)
+
+When a level triggered interrupt is signaled, the interrupt is masked
+on the host.  This is necessary to prevent the host from spinning on
+the interrupt handler and allowing userspace a chance to process the
+interrupt.  This also provides isolation from unresponsive userspace
+drivers.  After servicing the interrupt, UNMASK_IRQ is used to allow
+the interrupt to retrigger.  Note that level triggered interrupts
+are implicitly limited to a count of 1 because unmasking is done via
+{index} rather than {index,subindex}.  Bus drivers are however free to
+define multiple indexes for for devices supporting multiple level
+triggered interrupts.
+
+/* Unmask IRQ index, arg[0] = index */
+#define VFIO_DEVICE_UNMASK_IRQ          _IOW(';', 114, int)
+
+Level triggered interrupts can also be unmasked using an irqfd.  Use
+SET_UNMASK_IRQ_EVENTFD to set the file descriptor for this.
+
+/* Set unmask eventfd, arg[0] = index, arg[1] = eventfd */
+#define VFIO_DEVICE_SET_UNMASK_IRQ_EVENTFD      _IOW(';', 115, int)
+
+When supported, as indicated by the device flags, the RESET ioctl
+will reset the device.  The meaning of reset will be device specific,
+for PCI the vfio-pci bus driver makes use of pci_reset_function(),
+implementing an FLR or PM/bus reset as appropriate.  It's expect that
+interrupt programming remains persistent and that masked, level
+interrupts will be unmasked after reset.
+
+#define VFIO_DEVICE_RESET               _IO(';', 116)
+
+VFIO bus driver API
+-------------------------------------------------------------------------------
+
+Bus drivers, such as PCI, have three jobs:
+ 1) Add/remove devices from vfio
+ 2) Provide vfio_device_ops for device access
+ 3) Device binding and unbinding
+
+When initialized, the bus driver should enumerate the devices on its
+bus and call vfio_group_add_dev() for each device.  If the bus supports
+hotplug, notifiers should be enabled to track devices being added and
+removed.  vfio_group_del_dev() removes a previously added device from
+vfio.
+
+extern int vfio_group_add_dev(struct device *dev,
+                              const struct vfio_device_ops *ops);
+extern void vfio_group_del_dev(struct device *dev);
+
+Adding a device registers a vfio_device_ops function pointer structure
+for the device:
+
+struct vfio_device_ops {
+	bool			(*match)(struct device *dev, char *buf);
+	int			(*open)(void *device_data);
+	void			(*release)(void *device_data);
+	ssize_t			(*read)(void *device_data, char __user *buf,
+					size_t count, loff_t *ppos);
+	ssize_t			(*write)(void *device_data,
+					 const char __user *buf,
+					 size_t size, loff_t *ppos);
+	long			(*ioctl)(void *device_data, unsigned int cmd,
+					 unsigned long arg);
+	int			(*mmap)(void *device_data,
+					struct vm_area_struct *vma);
+};
+
+All functions are required to be implemented.
+
+match() provides a device specific method for associating a struct device
+to a user provided string.  Many drivers may simply strcmp the buffer to
+dev_name().
+
+The remaining ops are similar to a simplified struct file_operations
+except a device_data pointer is provided rather than a file pointer.
+The device_data is an opaque structure registered by the bus driver
+when a device is bound to the vfio bus driver:
+
+extern int vfio_bind_dev(struct device *dev, void *device_data);
+extern void *vfio_unbind_dev(struct device *dev);
+
+When the device is unbound from the driver, the bus driver will call
+vfio_unbind_dev() which will return the device_data for any bus driver
+specific cleanup and freeing of the structure.
+
+-------------------------------------------------------------------------------
+
+[1] VFIO was originally an acronym for "Virtual Function I/O" in it's
+initial implementation by Tom Lyon while as Cisco.  We've since outgrown
+the acronym, but it's catchy.
+
+[2] "safe" also depends upon a device being "well behaved".  It's
+possible for multi-function devices to have backdoors between functions
+and even for single function devices to have alternative access to
+things like PCI config space through MMIO registers.  To guard against
+the former we can include additional precaustions in the IOMMU driver
+to group multi-function PCI devices together (iommu=group_mf).  The
+latter we can't prevent, but the IOMMU should still provide isolation.
+For PCI, Virtual Functions are the best indicator of "well behaved", as
+these are designed for virtualization usage models.
+
+[3] As always there are trade-offs to virtual machine device
+assignment that are beyond the scope of VFIO.  It's expected that
+future IOMMU technologies will reduce some, but maybe not all, of
+these trade-offs.
