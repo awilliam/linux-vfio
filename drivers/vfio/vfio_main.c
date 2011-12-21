@@ -475,9 +475,9 @@ static int vfio_device_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_device *device = filep->private_data;
 
-	vfio_do_release(&device->refcnt, device->group->iommu);
-
 	device->ops->release(device->device_data);
+
+	vfio_do_release(&device->refcnt, device->group->iommu);
 
 	return 0;
 }
