@@ -4094,6 +4094,13 @@ static int intel_iommu_device_group(struct device *dev, unsigned int *groupid)
 		u32 group;
 	} id;
 
+	if (!intr_remapping_enabled && !iommu_group_unsafe_msi) {
+		printk_once(KERN_NOTICE "%s: "
+			    "IOMMU device group disabled without interrupt remapping support",
+			    pci_bus_type.name);
+		return -ENODEV;
+	}
+
 	if (iommu_no_mapping(dev))
 		return -ENODEV;
 
