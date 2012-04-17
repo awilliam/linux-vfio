@@ -26,6 +26,7 @@
 #define IOMMU_CACHE	(4) /* DMA cache coherency */
 
 struct iommu_ops;
+struct iommu_group;
 struct bus_type;
 struct device;
 struct iommu_domain;
@@ -59,6 +60,8 @@ struct iommu_domain {
  * @iova_to_phys: translate iova to physical address
  * @domain_has_cap: domain capabilities query
  * @commit: commit iommu domain
+ * @add_device: add device to iommu grouping
+ * @remove_device: remove device from iommu grouping
  * @pgsize_bitmap: bitmap of supported page sizes
  */
 struct iommu_ops {
@@ -74,9 +77,13 @@ struct iommu_ops {
 				    unsigned long iova);
 	int (*domain_has_cap)(struct iommu_domain *domain,
 			      unsigned long cap);
-	int (*device_group)(struct device *dev, unsigned int *groupid);
+	int (*add_device)(struct device *dev);
+	void (*remove_device)(struct device *dev);
 	unsigned long pgsize_bitmap;
 };
+
+#define IOMMU_GROUP_ADD_DEVICE		1 /* Device added to group */
+#define IOMMU_GROUP_DEL_DEVICE		2 /* Device being removed from group */
 
 extern int bus_set_iommu(struct bus_type *bus, struct iommu_ops *ops);
 extern bool iommu_present(struct bus_type *bus);
@@ -86,6 +93,10 @@ extern int iommu_attach_device(struct iommu_domain *domain,
 			       struct device *dev);
 extern void iommu_detach_device(struct iommu_domain *domain,
 				struct device *dev);
+extern int iommu_attach_group(struct iommu_domain *domain,
+			      struct iommu_group *group);
+extern void iommu_detach_group(struct iommu_domain *domain,
+			       struct iommu_group *group);
 extern int iommu_map(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot);
 extern size_t iommu_unmap(struct iommu_domain *domain, unsigned long iova,
@@ -96,7 +107,18 @@ extern int iommu_domain_has_cap(struct iommu_domain *domain,
 				unsigned long cap);
 extern void iommu_set_fault_handler(struct iommu_domain *domain,
 					iommu_fault_handler_t handler);
-extern int iommu_device_group(struct device *dev, unsigned int *groupid);
+extern struct iommu_group *iommu_group_alloc(void);
+extern int iommu_group_add_device(struct iommu_group *group,
+				  struct device *dev);
+extern void iommu_group_remove_device(struct device *dev);
+int iommu_group_for_each_dev(struct iommu_group *group, void *data,
+			     int (*fn)(struct device *, void *));
+struct iommu_group *iommu_group_get(struct device *dev);
+void iommu_group_put(struct iommu_group *group);
+int iommu_group_register_notifier(struct iommu_group *group,
+				  struct notifier_block *nb);
+int iommu_group_unregister_notifier(struct iommu_group *group,
+				    struct notifier_block *nb);
 
 /**
  * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework
@@ -140,6 +162,7 @@ static inline int report_iommu_fault(struct iommu_domain *domain,
 #else /* CONFIG_IOMMU_API */
 
 struct iommu_ops {};
+struct iommu_group {};
 
 static inline bool iommu_present(struct bus_type *bus)
 {
@@ -193,11 +216,6 @@ static inline int domain_has_cap(struct iommu_domain *domain,
 static inline void iommu_set_fault_handler(struct iommu_domain *domain,
 					iommu_fault_handler_t handler)
 {
-}
-
-static inline int iommu_device_group(struct device *dev, unsigned int *groupid)
-{
-	return -ENODEV;
 }
 
 #endif /* CONFIG_IOMMU_API */

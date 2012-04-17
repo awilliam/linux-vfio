@@ -4087,52 +4087,47 @@ static int intel_iommu_domain_has_cap(struct iommu_domain *domain,
 	return 0;
 }
 
-/*
- * Group numbers are arbitrary.  Device with the same group number
- * indicate the iommu cannot differentiate between them.  To avoid
- * tracking used groups we just use the seg|bus|devfn of the lowest
- * level we're able to differentiate devices
- */
-static int intel_iommu_device_group(struct device *dev, unsigned int *groupid)
+static int intel_iommu_add_device(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
-	struct pci_dev *bridge;
-	union {
-		struct {
-			u8 devfn;
-			u8 bus;
-			u16 segment;
-		} pci;
-		u32 group;
-	} id;
+	struct pci_dev *bridge, *dma_pdev = pdev;
+	struct iommu_group *group;
+	int ret;
 
-	if (iommu_no_mapping(dev))
-		return -ENODEV;
-
-	id.pci.segment = pci_domain_nr(pdev->bus);
-	id.pci.bus = pdev->bus->number;
-	id.pci.devfn = pdev->devfn;
-
-	if (!device_to_iommu(id.pci.segment, id.pci.bus, id.pci.devfn))
+	if (!device_to_iommu(pci_domain_nr(pdev->bus),
+			     pdev->bus->number, pdev->devfn))
 		return -ENODEV;
 
 	bridge = pci_find_upstream_pcie_bridge(pdev);
 	if (bridge) {
-		if (pci_is_pcie(bridge)) {
-			id.pci.bus = bridge->subordinate->number;
-			id.pci.devfn = 0;
-		} else {
-			id.pci.bus = bridge->bus->number;
-			id.pci.devfn = bridge->devfn;
-		}
+		if (pci_is_pcie(bridge))
+			dma_pdev = pci_get_domain_bus_and_slot(
+						pci_domain_nr(pdev->bus),
+						bridge->subordinate->number, 0);
+		else
+			dma_pdev = bridge;
 	}
 
-	if (!pdev->is_virtfn && iommu_group_mf)
-		id.pci.devfn = PCI_DEVFN(PCI_SLOT(id.pci.devfn), 0);
+	if (!bridge && !pdev->is_virtfn && iommu_group_mf)
+		dma_pdev = pci_get_slot(dma_pdev->bus, 0);
 
-	*groupid = id.group;
+	/* dma_pdev = iommu_pci_quirk(dma_pdev); */
 
-	return 0;
+	if (!(group = iommu_group_get(&dma_pdev->dev))) {
+		group = iommu_group_alloc();
+		if (IS_ERR(group))
+			return PTR_ERR(group);
+	}
+
+	ret = iommu_group_add_device(group, dev);
+
+	iommu_group_put(group);
+	return ret;
+}
+
+static void intel_iommu_remove_device(struct device *dev)
+{
+	iommu_group_remove_device(dev);
 }
 
 static struct iommu_ops intel_iommu_ops = {
@@ -4144,7 +4139,8 @@ static struct iommu_ops intel_iommu_ops = {
 	.unmap		= intel_iommu_unmap,
 	.iova_to_phys	= intel_iommu_iova_to_phys,
 	.domain_has_cap = intel_iommu_domain_has_cap,
-	.device_group	= intel_iommu_device_group,
+	.add_device	= intel_iommu_add_device,
+	.remove_device	= intel_iommu_remove_device,
 	.pgsize_bitmap	= INTEL_IOMMU_PGSIZES,
 };
 
