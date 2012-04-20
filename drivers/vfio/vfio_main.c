@@ -23,6 +23,7 @@
 #include <linux/iommu.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/pci.h> /* XXX for pci_bus_type hack, still need to pass bus */
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
@@ -50,15 +51,16 @@ static const struct file_operations vfio_group_fops;
 
 struct vfio_group {
 	dev_t			devt;
-	unsigned int		groupid;
-	struct bus_type		*bus;
+	struct iommu_group	*iommu_group;
 	struct vfio_iommu	*iommu;
 	struct list_head	device_list;
 	struct list_head	iommu_next;
 	struct list_head	group_next;
 	struct device		*dev;
 	struct kobject		*devices_kobj;
+	struct notifier_block	nb;
 	int			refcnt;
+	int			enabled_devices;
 	bool			tainted;
 };
 
@@ -267,7 +269,7 @@ static int __vfio_iommu_open(struct vfio_iommu *iommu)
 	if (iommu->domain)
 		return -EINVAL;
 
-	iommu->domain = iommu_domain_alloc(iommu->bus);
+	iommu->domain = iommu_domain_alloc(&pci_bus_type); /* XXX PCI?! */
 	if (!iommu->domain)
 		return -ENOMEM;
 
@@ -319,92 +321,157 @@ static int __vfio_try_dissolve_iommu(struct vfio_iommu *iommu)
 	return 0;
 }
 
-static struct vfio_device *__vfio_lookup_dev(struct device *dev)
+static struct vfio_device *__vfio_group_find_device(struct vfio_group *group,
+						    struct device *dev)
 {
-	struct list_head *gpos;
-	unsigned int groupid;
+	struct list_head *pos;
 
-	if (iommu_device_group(dev, &groupid))
-		return NULL;
+	list_for_each(pos, &group->device_list) {
+		struct vfio_device *device;
 
-	list_for_each(gpos, &vfio.group_list) {
-		struct vfio_group *group;
-		struct list_head *dpos;
-
-		group = list_entry(gpos, struct vfio_group, group_next);
-
-		if (group->groupid != groupid || group->bus != dev->bus)
-			continue;
-
-		list_for_each(dpos, &group->device_list) {
-			struct vfio_device *device;
-
-			device = list_entry(dpos,
-					    struct vfio_device, device_next);
-
-			if (device->dev == dev)
-				return device;
-		}
+		device = list_entry(pos, struct vfio_device, device_next);
+		if (device->dev == dev)
+			return device;
 	}
 	return NULL;
 }
 
-static struct vfio_group *__vfio_dev_to_group(struct device *dev,
-					      unsigned int groupid)
+static struct vfio_group *__vfio_get_iommu_group(
+					struct iommu_group *iommu_group)
 {
 	struct list_head *pos;
 	struct vfio_group *group;
 
 	list_for_each(pos, &vfio.group_list) {
 		group = list_entry(pos, struct vfio_group, group_next);
-		if (group->groupid == groupid && group->bus == dev->bus)
+		if (group->iommu_group == iommu_group)
 			return group;
 	}
 
 	return NULL;
 }
 
-struct vfio_device *__vfio_group_find_device(struct vfio_group *group,
-					     struct device *dev)
+static int __vfio_dev_add_group(struct device *dev, void *data)
 {
-	struct list_head *pos;
+	struct vfio_group *group = data;
 	struct vfio_device *device;
 
-	list_for_each(pos, &group->device_list) {
-		device = list_entry(pos, struct vfio_device, device_next);
-		if (device->dev == dev)
-			return device;
-	}
+	device = kzalloc(sizeof(*device), GFP_KERNEL);
+	if (!device)
+		return -ENOMEM;
 
-	return NULL;
+	list_add(&device->device_next, &group->device_list);
+	device->dev = dev;
+	device->group = group;
+
+	return 0;
 }
 
-static struct vfio_group *__vfio_create_group(struct device *dev,
-					      unsigned int groupid)
+static int vfio_group_add_dev_live(struct vfio_group *group, struct device *dev)
+{
+	struct vfio_device *device;
+	int ret;
+
+	mutex_lock(&vfio.lock);
+
+	/* If we already know about it, we're done */
+	device = __vfio_group_find_device(group, dev);
+	if (device) {
+		mutex_unlock(&vfio.lock);
+		return 0;
+	}
+
+	ret = __vfio_dev_add_group(dev, group);
+	if (WARN_ON(ret))
+		group->tainted = true; /* Untracked device, bad news */
+
+	if (group->iommu && __vfio_iommu_inuse(group->iommu)) {
+		BUG_ON(group->tainted);
+
+		/* XXX Disable device driver matching?  Force claim? */
+		/* TBD before upstreaming */
+	}
+
+	mutex_unlock(&vfio.lock);
+
+	return 0;
+}
+
+static int vfio_group_del_dev_live(struct vfio_group *group, struct device *dev)
+{
+	struct vfio_device *device;
+
+	mutex_lock(&vfio.lock);
+
+	/* If we don't know about it anyway, we're done */
+	device = __vfio_group_find_device(group, dev);
+	if (!device) {
+		mutex_unlock(&vfio.lock);
+		return 0;
+	}
+
+	/*
+	 * devices bound to a vfio driver will be removed through the
+	 * driver .remove.  We only need to cleanup driver-less devices.
+	 */
+	if (device->device_data) {
+		mutex_unlock(&vfio.lock);
+		return 0;
+	}
+
+	if (device->attached)
+			__vfio_iommu_detach_dev(group->iommu, device);
+
+	list_del(&device->device_next);
+	kfree(device);
+
+	mutex_unlock(&vfio.lock);
+
+	return 0;
+}
+
+static int vfio_iommu_group_notifier(struct notifier_block *nb,
+				     unsigned long action, void *data)
+{
+	struct vfio_group *group = container_of(nb, struct vfio_group, nb);
+	struct device *dev = data;
+
+	switch (action) {
+	case IOMMU_GROUP_ADD_DEVICE:
+		vfio_group_add_dev_live(group, dev);
+		break;
+	case IOMMU_GROUP_DEL_DEVICE:
+		vfio_group_del_dev_live(group, dev);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static void __vfio_group_del_devs(struct vfio_group *group)
+{
+	struct vfio_device *device, *p;
+
+	list_for_each_entry_safe(device, p, &group->device_list, device_next) {
+		list_del(&device->device_next);
+		kfree(device);
+	}
+}
+
+static struct vfio_group *__vfio_create_group(struct iommu_group *iommu_group)
 {
 	struct vfio_group *group;
 	int ret, minor;
 
 	group = kzalloc(sizeof(*group), GFP_KERNEL);
-
-	/*
-	 * We can't recover from this.  If we can't even get memory for
-	 * the group, we can't track the device and we don't have a place
-	 * to mark the groupid tainted.  Failures below should at least
-	 * return a tainted group.
-	 */
-	BUG_ON(!group);
-
-	group->groupid = groupid;
-	group->bus = dev->bus;
-	INIT_LIST_HEAD(&group->device_list);
-
-	group->tainted = true;
-	list_add(&group->group_next, &vfio.group_list);
+	if (!group)
+		return ERR_PTR(-ENOMEM);
 
 again:
-	if (unlikely(idr_pre_get(&vfio.idr, GFP_KERNEL) == 0))
-		goto out;
+	if (unlikely(idr_pre_get(&vfio.idr, GFP_KERNEL) == 0)) {
+		kfree(group);
+		return ERR_PTR(-ENOMEM);
+	}
 
 	ret = idr_get_new(&vfio.idr, group, &minor);
 	if (ret == -EAGAIN)
@@ -412,36 +479,57 @@ again:
 	if (ret || minor > MINORMASK) {
 		if (minor > MINORMASK)
 			idr_remove(&vfio.idr, minor);
-		goto out;
+		kfree(group);
+		return ERR_PTR(-ENOSPC);
+	}
+
+	group->iommu_group = iommu_group;
+	INIT_LIST_HEAD(&group->device_list);
+
+	ret = iommu_group_for_each_dev(iommu_group, group,
+				       __vfio_dev_add_group);
+	if (ret) {
+		__vfio_group_del_devs(group);
+		idr_remove(&vfio.idr, minor);
+		kfree(group);
+		return ERR_PTR(ret);
+	}
+
+	group->nb.notifier_call = vfio_iommu_group_notifier;
+	/* XXX lockdep bug here, holding vfio.lock, acquiring rwsem on
+	 * notifier.  When called, rwsem held, vfio.lock acquired. */
+	ret = iommu_group_register_notifier(iommu_group, &group->nb);
+	if (ret) {
+		__vfio_group_del_devs(group);
+		idr_remove(&vfio.idr, minor);
+		kfree(group);
+		return ERR_PTR(ret);
 	}
 
 	group->devt = MKDEV(MAJOR(vfio.devt), minor);
 	group->dev = device_create(vfio.class, NULL, group->devt, group,
-				   "%s:%u", dev->bus->name, groupid);
-	if (IS_ERR(group->dev))
-		goto out_device;
+				   "%d", iommu_group_id(iommu_group));
+	if (IS_ERR(group->dev)) {
+		void *err = group->dev;
+		__vfio_group_del_devs(group);
+		idr_remove(&vfio.idr, minor);
+		kfree(group);
+		return err;
+	}
 
-	/* Create a place to link individual devices in sysfs */
-	group->devices_kobj = kobject_create_and_add("devices",
-						     &group->dev->kobj);
-	if (!group->devices_kobj)
-		goto out_kobj;
-
-	group->tainted = false;
+	list_add(&group->group_next, &vfio.group_list);
 
 	return group;
+}
 
-out_kobj:
+static void __vfio_destroy_group(struct vfio_group *group)
+{
+	list_del(&group->group_next);
 	device_destroy(vfio.class, group->devt);
-out_device:
-	group->dev = NULL;
-	group->devt = 0;
-	idr_remove(&vfio.idr, minor);
-out:
-	printk(KERN_WARNING "vfio: Failed to complete setup on group %u, "
-	       "marking as unusable\n", groupid);
-
-	return group;
+	idr_remove(&vfio.idr, MINOR(group->devt));
+	iommu_group_unregister_notifier(group->iommu_group, &group->nb);
+	__vfio_group_del_devs(group);
+	kfree(group);
 }
 
 static struct vfio_iommu *vfio_create_iommu(struct vfio_group *group)
@@ -455,7 +543,6 @@ static struct vfio_iommu *vfio_create_iommu(struct vfio_group *group)
 	INIT_LIST_HEAD(&iommu->group_list);
 	INIT_LIST_HEAD(&iommu->dma_list);
 	mutex_init(&iommu->lock);
-	iommu->bus = group->bus;
 
 	return iommu;
 }
@@ -622,8 +709,7 @@ static int vfio_group_merge(struct vfio_group *group, int fd)
 
 	new = file->private_data;
 
-	if (!new || new == group || !new->iommu ||
-	    new->iommu->domain || new->bus != group->bus) {
+	if (!new || new == group || !new->iommu || new->iommu->domain) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -779,7 +865,7 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 			device = list_entry(dpos,
 					    struct vfio_device, device_next);
 
-			if (!device->ops->match(device->dev, buf))
+			if (strcmp(dev_name(device->dev), buf))
 				continue;
 
 			ret = device->ops->open(device->device_data);
@@ -922,212 +1008,66 @@ int vfio_release_iommu(struct vfio_iommu *iommu)
  * VFIO driver API
  */
 
-/*
- * Add a new device to the vfio framework with associated vfio driver
- * callbacks.  This is the entry point for vfio drivers to register devices.
- */
-int vfio_group_add_dev(struct device *dev, const struct vfio_device_ops *ops)
+int vfio_add_group_dev(struct iommu_group *iommu_group, struct device *dev,
+		       const struct vfio_device_ops *ops, void *device_data)
 {
 	struct vfio_group *group;
-	struct vfio_device *device;
-	unsigned int groupid;
-	int ret = 0;
-
-	if (iommu_device_group(dev, &groupid))
-		return -ENODEV;
-
-	if (WARN_ON(!ops))
-		return -EINVAL;
-
-	mutex_lock(&vfio.lock);
-
-	group = __vfio_dev_to_group(dev, groupid);
-	if (!group)
-		group = __vfio_create_group(dev, groupid); /* No fail */
-
-	device = __vfio_group_find_device(group, dev);
-	if (!device) {
-		device = kzalloc(sizeof(*device), GFP_KERNEL);
-		if (WARN_ON(!device)) {
-			/*
-			 * We created the group, but can't add this device,
-			 * taint the group to prevent it being used.  If
-			 * it's already in use, we have to BUG_ON.
-			 * XXX - Kill the user process?
-			 */
-			group->tainted = true;
-			BUG_ON(group->iommu && group->iommu->domain);
-			ret = -ENOMEM;
-			goto out;
-		}
-
-		list_add(&device->device_next, &group->device_list);
-		device->dev = dev;
-		device->ops = ops;
-		device->group = group;
-
-		if (!group->devices_kobj ||
-		    sysfs_create_link(group->devices_kobj,
-				      &dev->kobj, dev_name(dev)))
-			printk(KERN_WARNING
-			       "vfio: Unable to create sysfs link to %s\n",
-			       dev_name(dev));
-
-		if (group->iommu && group->iommu->domain) {
-			printk(KERN_WARNING "Adding device %s to group %s:%u "
-			       "while group is already in use!!\n",
-			       dev_name(dev), group->bus->name, group->groupid);
-
-			mutex_unlock(&vfio.lock);
-
-			ret = ops->claim(dev);
-
-			BUG_ON(ret);
-
-			goto out_unlocked;
-		}
-
-	}
-out:
-	mutex_unlock(&vfio.lock);
-out_unlocked:
-	return ret;
-}
-EXPORT_SYMBOL_GPL(vfio_group_add_dev);
-
-/* Remove a device from the vfio framework */
-void vfio_group_del_dev(struct device *dev)
-{
-	struct vfio_group *group;
-	struct vfio_device *device;
-	unsigned int groupid;
-
-	if (iommu_device_group(dev, &groupid))
-		return;
-
-	mutex_lock(&vfio.lock);
-
-	group = __vfio_dev_to_group(dev, groupid);
-
-	if (WARN_ON(!group))
-		goto out;
-
-	device = __vfio_group_find_device(group, dev);
-
-	if (WARN_ON(!device))
-		goto out;
-
-	/*
-	 * If device is bound to a bus driver, we'll get a chance to
-	 * unbind it first.  Just mark it to be removed after unbind.
-	 */
-	if (device->device_data) {
-		device->deleteme = true;
-		goto out;
-	}
-
-	if (device->attached)
-		__vfio_iommu_detach_dev(group->iommu, device);
-
-	list_del(&device->device_next);
-
-	if (group->devices_kobj)
-		sysfs_remove_link(group->devices_kobj, dev_name(dev));
-
-	kfree(device);
-
-	/*
-	 * If this was the only device in the group, remove the group.
-	 * Note that we intentionally unmerge empty groups here if the
-	 * group fd isn't opened.
-	 */
-	if (list_empty(&group->device_list) && group->refcnt == 0) {
-		struct vfio_iommu *iommu = group->iommu;
-
-		if (iommu) {
-			__vfio_group_set_iommu(group, NULL);
-			__vfio_try_dissolve_iommu(iommu);
-		}
-
-		/*
-		 * Groups can be mostly placeholders if setup isn't
-		 * completed, remove them carefully.
-		 */
-		if (group->devices_kobj)
-			kobject_put(group->devices_kobj);
-		if (group->dev) {
-			device_destroy(vfio.class, group->devt);
-			idr_remove(&vfio.idr, MINOR(group->devt));
-		}
-		list_del(&group->group_next);
-		kfree(group);
-	}
-
-out:
-	mutex_unlock(&vfio.lock);
-}
-EXPORT_SYMBOL_GPL(vfio_group_del_dev);
-
-/*
- * When a device is bound to a vfio device driver (ex. vfio-pci), this
- * entry point is used to mark the device usable (viable).  The vfio
- * device driver associates a private device_data struct with the device
- * here, which will later be return for vfio_device_fops callbacks.
- */
-int vfio_bind_dev(struct device *dev, void *device_data)
-{
 	struct vfio_device *device;
 	int ret;
 
-	if (WARN_ON(!device_data))
-		return -EINVAL;
-
 	mutex_lock(&vfio.lock);
 
-	device = __vfio_lookup_dev(dev);
+	group = __vfio_get_iommu_group(iommu_group);
+	if (!group) {
+		group = __vfio_create_group(iommu_group);
+		if (IS_ERR(group))
+			return PTR_ERR(group);
+	}
 
-	if (WARN_ON(!device)) {
-		ret = -EINVAL;
-		goto out;
+	device = __vfio_group_find_device(group, dev);
+	if (!device) {
+		if (!group->enabled_devices)
+			__vfio_destroy_group(group);
+		return -EINVAL;
 	}
 
 	ret = dev_set_drvdata(dev, device);
-	if (!ret)
-		device->device_data = device_data;
+	if (ret) {
+		if (!group->enabled_devices)
+			__vfio_destroy_group(group);
+		return ret;
+	}
+	
+	device->ops = ops;
+	device->device_data = device_data;
 
-out:
+	group->enabled_devices++;
+
 	mutex_unlock(&vfio.lock);
-	return ret;
+
+	return 0;
 }
-EXPORT_SYMBOL_GPL(vfio_bind_dev);
+EXPORT_SYMBOL_GPL(vfio_add_group_dev);
 
 /* A device is only removable if the iommu for the group is not in use. */
 static bool vfio_device_removeable(struct vfio_device *device)
 {
-	bool ret = true;
+	bool removeable = true;
 
 	mutex_lock(&vfio.lock);
 
 	if (device->group->iommu && __vfio_iommu_inuse(device->group->iommu))
-		ret = false;
+		removeable = false;
 
 	mutex_unlock(&vfio.lock);
-	return ret;
+	return removeable;
 }
 
-/*
- * Notify vfio that a device is being unbound from the vfio device driver
- * and return the device private device_data pointer.  If the group is
- * in use, we need to block or take other measures to make it safe for
- * the device to be removed from the iommu.
- */
-void *vfio_unbind_dev(struct device *dev)
+void *vfio_del_group_dev(struct device *dev)
 {
 	struct vfio_device *device = dev_get_drvdata(dev);
 	void *device_data;
 
-	if (WARN_ON(!device))
-		return NULL;
 again:
 	if (!vfio_device_removeable(device)) {
 		/*
@@ -1147,18 +1087,18 @@ again:
 	}
 
 	device_data = device->device_data;
-
-	device->device_data = NULL;
 	dev_set_drvdata(dev, NULL);
+
+	device->group->enabled_devices--;
+
+	if (!device->group->enabled_devices)
+		__vfio_destroy_group(device->group);
 
 	mutex_unlock(&vfio.lock);
 
-	if (device->deleteme)
-		vfio_group_del_dev(dev);
-
 	return device_data;
 }
-EXPORT_SYMBOL_GPL(vfio_unbind_dev);
+EXPORT_SYMBOL_GPL(vfio_del_group_dev);
 
 /*
  * Module/class support
@@ -1216,22 +1156,7 @@ err_class:
 
 static void __exit vfio_cleanup(void)
 {
-	struct list_head *gpos, *gppos;
-
-	list_for_each_safe(gpos, gppos, &vfio.group_list) {
-		struct vfio_group *group;
-		struct list_head *dpos, *dppos;
-
-		group = list_entry(gpos, struct vfio_group, group_next);
-
-		list_for_each_safe(dpos, dppos, &group->device_list) {
-			struct vfio_device *device;
-
-			device = list_entry(dpos,
-					    struct vfio_device, device_next);
-			vfio_group_del_dev(device->dev);
-		}
-	}
+	WARN_ON(!list_empty(&vfio.group_list));
 
 	idr_destroy(&vfio.idr);
 	cdev_del(&vfio.cdev);

@@ -51,7 +51,7 @@ int __init vfio_pci_virqfd_init(void)
 	return 0;
 }
 
-void __exit vfio_pci_virqfd_exit(void)
+void vfio_pci_virqfd_exit(void)
 {
 	destroy_workqueue(vfio_irqfd_cleanup_wq);
 }

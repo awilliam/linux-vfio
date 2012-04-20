@@ -42,63 +42,12 @@ struct vfio_device_ops {
 	int	(*mmap)(void *device_data, struct vm_area_struct *vma);
 };
 
-/**
- * vfio_group_add_dev() - Add a device to the vfio-core
- *
- * @dev: Device to add
- * @ops: VFIO bus driver callbacks for device
- *
- * This registration makes the VFIO core aware of the device, creates
- * groups objects as required and exposes chardevs under /dev/vfio.
- *
- * Return 0 on success, errno on failure.
- */
-extern int vfio_group_add_dev(struct device *dev,
-			      const struct vfio_device_ops *ops);
+extern int vfio_add_group_dev(struct iommu_group *iommu_group,
+			      struct device *dev,
+			      const struct vfio_device_ops *ops,
+			      void *device_data);
 
-/**
- * vfio_group_del_dev() - Remove a device from the vfio-core
- *
- * @dev: Device to remove
- *
- * Remove a device previously added to the VFIO core, removing groups
- * and chardevs as necessary.
- */
-extern void vfio_group_del_dev(struct device *dev);
-
-/**
- * vfio_bind_dev() - Indicate device is bound to the VFIO bus driver and
- *                   register private data structure for ops callbacks.
- *
- * @dev: Device being bound
- * @device_data: VFIO bus driver private data
- *
- * This registration indicate that a device previously registered with
- * vfio_group_add_dev() is now available for use by the VFIO core.  When
- * all devices within a group are available, the group is viable and my
- * be used by userspace drivers.  Typically called from VFIO bus driver
- * probe function.
- *
- * Return 0 on success, errno on failure
- */
-extern int vfio_bind_dev(struct device *dev, void *device_data);
-
-/**
- * vfio_unbind_dev() - Indicate device is unbinding from VFIO bus driver
- *
- * @dev: Device being unbound
- *
- * De-registration of the device previously registered with vfio_bind_dev()
- * from VFIO.  Upon completion, the device is no longer available for use by
- * the VFIO core.  Typically called from the VFIO bus driver remove function.
- * The VFIO core will attempt to release the device from users and may take
- * measures to free the device and/or block as necessary.
- *
- * Returns pointer to private device_data structure registered with
- * vfio_bind_dev().
- */
-extern void *vfio_unbind_dev(struct device *dev);
-
+extern void *vfio_del_group_dev(struct device *dev);
 
 /**
  * offsetofend(TYPE, MEMBER)

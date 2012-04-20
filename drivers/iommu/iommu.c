@@ -339,6 +339,18 @@ int iommu_group_unregister_notifier(struct iommu_group *group,
 }
 EXPORT_SYMBOL_GPL(iommu_group_unregister_notifier);
 
+/**
+ * iommu_group_id - Return ID for a group
+ * @group: the group to ID
+ *
+ * Return the unique ID for the group matching the sysfs group number.
+ */
+int iommu_group_id(struct iommu_group *group)
+{
+	return group->id;
+}
+EXPORT_SYMBOL_GPL(iommu_group_id);
+
 static int add_iommu_group(struct device *dev, void *data)
 {
 	struct iommu_ops *ops = data;

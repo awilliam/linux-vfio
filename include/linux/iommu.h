@@ -119,6 +119,7 @@ int iommu_group_register_notifier(struct iommu_group *group,
 				  struct notifier_block *nb);
 int iommu_group_unregister_notifier(struct iommu_group *group,
 				    struct notifier_block *nb);
+int iommu_group_id(struct iommu_group *group);
 
 /**
  * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework

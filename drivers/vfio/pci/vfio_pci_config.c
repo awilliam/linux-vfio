@@ -716,7 +716,7 @@ static int __init init_pci_ext_cap_pwr_perm(struct perm_bits *perm)
 /*
  * Initialize the shared permission tables
  */
-void __exit vfio_pci_uninit_perm_bits(void)
+void vfio_pci_uninit_perm_bits(void)
 {
 	free_perm_bits(&cap_perms[PCI_CAP_ID_BASIC]);
 

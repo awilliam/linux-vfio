@@ -14,6 +14,7 @@
 #include <linux/device.h>
 #include <linux/eventfd.h>
 #include <linux/interrupt.h>
+#include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/notifier.h>
@@ -26,59 +27,9 @@
 
 #include "vfio_pci_private.h"
 
-#define DRIVER_VERSION  "0.1"
+#define DRIVER_VERSION  "0.1.9"
 #define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC     "VFIO PCI - User Level meta-driver"
-
-/* Bind a device to vfio-pci.  We'll do more init once it's opened */
-static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
-{
-	u8 type;
-	struct vfio_pci_device *vdev;
-	int ret;
-
-	pci_read_config_byte(pdev, PCI_HEADER_TYPE, &type);
-	if ((type & PCI_HEADER_TYPE) != PCI_HEADER_TYPE_NORMAL)
-		return -EINVAL;
-
-	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
-	if (!vdev)
-		return -ENOMEM;
-
-	vdev->pdev = pdev;
-	vdev->irq_type = VFIO_PCI_NUM_IRQS;
-	mutex_init(&vdev->igate);
-	atomic_set(&vdev->refcnt, 0);
-
-	ret = vfio_bind_dev(&pdev->dev, vdev);
-	if (ret)
-		kfree(vdev);
-
-	return ret;
-}
-
-static void vfio_pci_remove(struct pci_dev *pdev)
-{
-	struct vfio_pci_device *vdev;
-
-	vdev = vfio_unbind_dev(&pdev->dev);
-	if (!vdev)
-		return;
-
-	kfree(vdev);
-}
-
-static struct pci_driver vfio_pci_driver = {
-	.name		= "vfio",
-	.id_table	= NULL, /* only dynamic ids */
-	.probe		= vfio_pci_probe,
-	.remove		= vfio_pci_remove,
-};
-
-static bool vfio_pci_match(struct device *dev, const char *buf)
-{
-	return strcmp(dev_name(dev), buf) == 0;
-}
 
 static int vfio_pci_enable(struct vfio_pci_device *vdev)
 {
@@ -492,58 +443,7 @@ static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 			       req_len, vma->vm_page_prot);
 }
 
-static int vfio_pci_claim(struct device *dev)
-{
-	struct pci_dev *pci_dev = to_pci_dev(dev);
-	int ret;
-
-	get_driver(&vfio_pci_driver.driver);
-
-	pm_runtime_get_noresume(dev);
-	pm_runtime_barrier(dev);
-
-	dev->driver = &vfio_pci_driver.driver;
-
-	pci_dev_get(pci_dev);
-
-	pci_dev->driver = &vfio_pci_driver;
-
-	ret = device_bind_driver(dev);
-	if (ret)
-		goto out_bind;
-
-	pm_runtime_set_active(dev);
-	pm_runtime_enable(dev);
-
-	ret = vfio_pci_probe(pci_dev, NULL);
-	if (ret)
-		goto out_probe;
-
-	pm_runtime_put_sync(dev);
-
-	put_driver(&vfio_pci_driver.driver);
-
-	return 0;
-
-out_probe:
-	pm_runtime_disable(dev);
-	pm_runtime_set_suspended(dev);
-	pm_runtime_put_noidle(dev);
-
-out_bind:
-	pci_dev_put(pci_dev);
-
-	dev->driver = NULL;
-	pci_dev->driver = NULL;
-
-	put_driver(&vfio_pci_driver.driver);
-
-	return ret;
-}
-
 static const struct vfio_device_ops vfio_pci_ops = {
-	.match		= vfio_pci_match,
-	.claim		= vfio_pci_claim,
 	.open		= vfio_pci_open,
 	.release	= vfio_pci_release,
 	.ioctl		= vfio_pci_ioctl,
@@ -552,53 +452,63 @@ static const struct vfio_device_ops vfio_pci_ops = {
 	.mmap		= vfio_pci_mmap,
 };
 
-static int vfio_pci_device_notifier(struct notifier_block *nb,
-				    unsigned long action, void *data)
+static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
-	struct device *dev = data;
-	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	u8 type;
+	struct vfio_pci_device *vdev;
+	struct iommu_group *group;
+	int ret;
 
-	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
-		return 0;
+	pci_read_config_byte(pdev, PCI_HEADER_TYPE, &type);
+	if ((type & PCI_HEADER_TYPE) != PCI_HEADER_TYPE_NORMAL)
+		return -EINVAL;
 
-	if (action == BUS_NOTIFY_ADD_DEVICE)
-		return vfio_group_add_dev(dev, &vfio_pci_ops);
-	else if (action == BUS_NOTIFY_DEL_DEVICE)
-		vfio_group_del_dev(dev);
+	group = iommu_group_get(&pdev->dev);
+	if (!group)
+		return -EINVAL;
 
-	return 0;
+	vdev = kzalloc(sizeof(*vdev), GFP_KERNEL);
+	if (!vdev) {
+		iommu_group_put(group);
+		return -ENOMEM;
+	}
+
+	vdev->pdev = pdev;
+	vdev->irq_type = VFIO_PCI_NUM_IRQS;
+	mutex_init(&vdev->igate);
+	atomic_set(&vdev->refcnt, 0);
+
+	ret = vfio_add_group_dev(group, &pdev->dev, &vfio_pci_ops, vdev);
+	if (ret) {
+		iommu_group_put(group);
+		kfree(vdev);
+	}
+
+	return ret;
 }
 
-static int vfio_pci_do_dev_add(struct device *dev, void *data)
+static void vfio_pci_remove(struct pci_dev *pdev)
 {
-	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	struct vfio_pci_device *vdev;
 
-	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
-		return 0;
+	vdev = vfio_del_group_dev(&pdev->dev);
+	if (!vdev)
+		return;
 
-	return vfio_group_add_dev(dev, &vfio_pci_ops);
+	iommu_group_put(pdev->dev.iommu_group);
+	kfree(vdev);
 }
 
-static int vfio_pci_do_dev_del(struct device *dev, void *data)
-{
-	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
-
-	if (pdev->hdr_type != PCI_HEADER_TYPE_NORMAL)
-		return 0;
-
-	vfio_group_del_dev(dev);
-	return 0;
-}
-
-static struct notifier_block vfio_pci_device_nb = {
-	.notifier_call = vfio_pci_device_notifier,
+static struct pci_driver vfio_pci_driver = {
+	.name		= "vfio",
+	.id_table	= NULL, /* only dynamic ids */
+	.probe		= vfio_pci_probe,
+	.remove		= vfio_pci_remove,
 };
 
 void __exit vfio_pci_cleanup(void)
 {
-	bus_unregister_notifier(&pci_bus_type, &vfio_pci_device_nb);
 	pci_unregister_driver(&vfio_pci_driver);
-	bus_for_each_dev(&pci_bus_type, NULL, NULL, vfio_pci_do_dev_del);
 	vfio_pci_virqfd_exit();
 	vfio_pci_uninit_perm_bits();
 }
@@ -621,9 +531,6 @@ int __init vfio_pci_init(void)
 	ret = pci_register_driver(&vfio_pci_driver);
 	if (ret)
 		goto out_driver;
-
-	bus_register_notifier(&pci_bus_type, &vfio_pci_device_nb);
-	bus_for_each_dev(&pci_bus_type, NULL, NULL, vfio_pci_do_dev_add);
 
 	return 0;
 
