@@ -13,14 +13,14 @@
 
 #include <linux/types.h>
 
+#define VFIO_API_VERSION	0
+
 #ifdef __KERNEL__	/* Internal VFIO-core/bus driver API */
 
 /**
  * struct vfio_device_ops - VFIO bus driver device callbacks
  *
- * @match: Return true if buf describes the device
- * @claim: Force driver to attach to device
- * @open: Called when userspace receives file descriptor for device
+ * @open: Called when userspace creates new file descriptor for device
  * @release: Called when userspace releases file descriptor for device
  * @read: Perform read(2) on device file descriptor
  * @write: Perform write(2) on device file descriptor
@@ -29,8 +29,6 @@
  * @mmap: Perform mmap(2) on a region of the device file descriptor
  */
 struct vfio_device_ops {
-	bool	(*match)(struct device *dev, const char *buf);
-	int	(*claim)(struct device *dev);
 	int	(*open)(void *device_data);
 	void	(*release)(void *device_data);
 	ssize_t	(*read)(void *device_data, char __user *buf,
@@ -81,64 +79,35 @@ extern void *vfio_del_group_dev(struct device *dev);
 #define VFIO_TYPE	(';')
 #define VFIO_BASE	100
 
-/* --------------- IOCTLs for GROUP file descriptors --------------- */
+/* -------- IOCTLs for VFIO file descriptor (/dev/vfio/vfio) -------- */
 
 /**
- * VFIO_GROUP_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 0, struct vfio_group_info)
+ * VFIO_GET_API_VERSION - _IO(VFIO_TYPE, VFIO_BASE + 0)
  *
- * Retrieve information about the group.  Fills in provided
- * struct vfio_group_info.  Caller sets argsz.
+ * Report the version of the VFIO API.  This allows us to bump the entire
+ * API version should we later need to add or change features in incompatible
+ * ways.
+ * Return: VFIO_API_VERSION
+ * Availability: Always
  */
-struct vfio_group_info {
-	__u32	argsz;
-	__u32	flags;
-#define VFIO_GROUP_FLAGS_VIABLE		(1 << 0)
-#define VFIO_GROUP_FLAGS_MM_LOCKED	(1 << 1)
-};
-
-#define VFIO_GROUP_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 0)
+#define VFIO_GET_API_VERSION		_IO(VFIO_TYPE, VFIO_BASE + 0)
 
 /**
- * VFIO_GROUP_MERGE - _IOW(VFIO_TYPE, VFIO_BASE + 1, __s32)
+ * VFIO_CHECK_EXTENSION - _IO(VFIO_TYPE, VFIO_BASE + 1)
  *
- * Merge group indicated by passed file descriptor into current group.
- * Current group may be in use, group indicated by file descriptor
- * cannot be in use (no open iommu or devices).
+ * Check whether an extension is supported.
+ * Return: 0 if not supported, 1 (or some other positive integer) if supported.
+ * Availability: Always
  */
-#define VFIO_GROUP_MERGE		_IOW(VFIO_TYPE, VFIO_BASE + 1, __s32)
+#define VFIO_CHECK_EXTENSION		_IO(VFIO_TYPE, VFIO_BASE + 1)
 
 /**
- * VFIO_GROUP_UNMERGE - _IO(VFIO_TYPE, VFIO_BASE + 2)
+ * VFIO_GET_IOMMU_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 2, struct vfio_iommu_info)
  *
- * Remove the current group from a merged set.  The current group cannot
- * have any open devices.
- */
-#define VFIO_GROUP_UNMERGE		_IO(VFIO_TYPE, VFIO_BASE + 2)
-
-/**
- * VFIO_GROUP_GET_IOMMU_FD - _IO(VFIO_TYPE, VFIO_BASE + 3)
- *
- * Return a new file descriptor for the IOMMU object.  The IOMMU object
- * is shared among members of a merged group.
- */
-#define VFIO_GROUP_GET_IOMMU_FD		_IO(VFIO_TYPE, VFIO_BASE + 3)
-
-/**
- * VFIO_GROUP_GET_DEVICE_FD - _IOW(VFIO_TYPE, VFIO_BASE + 4, char)
- *
- * Return a new file descriptor for the device object described by
- * the provided char array.
- */
-#define VFIO_GROUP_GET_DEVICE_FD	_IOW(VFIO_TYPE, VFIO_BASE + 4, char)
-
-
-/* --------------- IOCTLs for IOMMU file descriptors --------------- */
-
-/**
- * VFIO_IOMMU_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 5, struct vfio_iommu_info)
- *
- * Retrieve information about the IOMMU object.  Fills in provided
+ * Retrieve information about the IOMMU.  Fills in provided
  * struct vfio_iommu_info.  Caller sets argsz.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When VFIO group attached
  */
 struct vfio_iommu_info {
 	__u32	argsz;
@@ -148,14 +117,15 @@ struct vfio_iommu_info {
 	__u64	iova_entries;	/* Number mapping entries available */
 	__u64	iova_pgsizes;	/* Bitmap of supported page sizes */
 };
-
-#define	VFIO_IOMMU_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 5)
+#define	VFIO_GET_IOMMU_INFO		_IO(VFIO_TYPE, VFIO_BASE + 2)
 
 /**
- * VFIO_IOMMU_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 6, struct vfio_dma_map)
+ * VFIO_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 3, struct vfio_dma_map)
  *
  * Map process virtual addresses to IO virtual addresses using the
  * provided struct vfio_dma_map.  Caller sets argsz.  READ &/ WRITE required.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When VFIO group attached
  */
 struct vfio_dma_map {
 	__u32	argsz;
@@ -166,14 +136,15 @@ struct vfio_dma_map {
 	__u64	iova;		/* IO virtual address */
 	__u64	size;		/* Size of mapping (bytes) */
 };
-
-#define	VFIO_IOMMU_MAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 6)
+#define	VFIO_MAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 3)
 
 /**
- * VFIO_IOMMU_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 7, struct vfio_dma_unmap)
+ * VFIO_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 4, struct vfio_dma_unmap)
  *
  * Unmap IO virtual addresses using the provided struct vfio_dma_unmap.
  * Caller sets argsz.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When VFIO group attached
  */
 struct vfio_dma_unmap {
 	__u32	argsz;
@@ -181,18 +152,95 @@ struct vfio_dma_unmap {
 	__u64	iova;		/* IO virtual address */
 	__u64	size;		/* Size of mapping (bytes) */
 };
+#define	VFIO_UNMAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 4)
 
-#define	VFIO_IOMMU_UNMAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 7)
+/**
+ * VFIO_ENABLE_IOMMU - _IO(VFIO_TYPE, VFIO_BASE + 5)
+ *
+ * Enable IOMMU translations for the current context.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When VFIO group attached
+ */
+#define VFIO_ENABLE_IOMMU	_IO(VFIO_TYPE, VFIO_BASE + 5)
 
+/**
+ * VFIO_DISABLE_IOMMU - _IO(VFIO_TYPE, VFIO_BASE + 6)
+ *
+ * Disable IOMMU translations for the current context.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When VFIO group attached
+ */
+#define VFIO_DISBLE_IOMMU	_IO(VFIO_TYPE, VFIO_BASE + 6)
+
+/* -------- IOCTLs for GROUP file descriptors (/dev/vfio/$GROUP) -------- */
+
+/**
+ * VFIO_GROUP_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 7, struct vfio_group_info)
+ *
+ * Retrieve information about the group.  Fills in provided
+ * struct vfio_group_info.  Caller sets argsz.
+ * Return: 0 on succes, -errno on failure.
+ * Availability: Always
+ */
+struct vfio_group_info {
+	__u32	argsz;
+	__u32	flags;
+#define VFIO_GROUP_FLAGS_VIABLE		(1 << 0)
+#define VFIO_GROUP_FLAGS_MM_LOCKED	(1 << 1)
+#define VFIO_GROUP_FLAGS_CONTAINER_SET	(1 << 2)
+};
+#define VFIO_GROUP_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 7)
+
+/**
+ * VFIO_GROUP_SET_CONTAINER - _IOW(VFIO_TYPE, VFIO_BASE + 8, __s32)
+ *
+ * Set the container for the VFIO group to the open VFIO file
+ * descriptor provided.  Groups may only belong to a single
+ * container.  Containers may, at their discretion, support multiple
+ * groups.  Only when a container is set are all of the interfaces
+ * of the VFIO file descriptor and the VFIO group file descriptor
+ * available to the user.
+ * Return: 0 on success, -errno on failure.
+ * Availability: Always
+ */
+#define VFIO_GROUP_SET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 8)
+
+/**
+ * VFIO_GROUP_UNSET_CONTAINER - _IO(VFIO_TYPE, VFIO_BASE + 9)
+ *
+ * Remove the group from the attached container.  This is the
+ * opposite of the SET_CONTAINER call and returns the group to
+ * an initial state.  All device file descriptors must be released
+ * prior to calling this interface.  When removing the last group
+ * from a container, the IOMMU will be disabled and all state lost,
+ * effectively also returning the VFIO file descriptor to an initial
+ * state.
+ * Return: 0 on success, -errno on failure.
+ * Availability: When attached to container
+ */
+#define VFIO_GROUP_UNSET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 9)
+
+/**
+ * VFIO_GROUP_GET_DEVICE_FD - _IOW(VFIO_TYPE, VFIO_BASE + 10, char)
+ *
+ * Return a new file descriptor for the device object described by
+ * the provided string.  The string should match a device listed in
+ * the devices subdirectory of the IOMMU group sysfs entry.  The
+ * group containing the device must already be added to this context.
+ * Return: new file descriptor on success, -errno on failure.
+ * Availability: When attached to container
+ */
+#define VFIO_GROUP_GET_DEVICE_FD	_IO(VFIO_TYPE, VFIO_BASE + 10)
 
 /* --------------- IOCTLs for DEVICE file descriptors --------------- */
 
 /**
- * VFIO_DEVICE_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 8,
- *			       struct vfio_device_info)
+ * VFIO_DEVICE_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 11,
+ * 						struct vfio_device_info)
  *
  * Retrieve information about the device.  Fills in provided
  * struct vfio_device_info.  Caller sets argsz.
+ * Return: 0 on success, -errno on failure.
  */
 struct vfio_device_info {
 	__u32	argsz;
@@ -202,11 +250,10 @@ struct vfio_device_info {
 	__u32	num_regions;	/* Max region index + 1 */
 	__u32	num_irqs;	/* Max IRQ index + 1 */
 };
-
-#define VFIO_DEVICE_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 8)
+#define VFIO_DEVICE_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 11)
 
 /**
- * VFIO_DEVICE_GET_REGION_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 9,
+ * VFIO_DEVICE_GET_REGION_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 12,
  *				       struct vfio_region_info)
  *
  * Retrieve information about a device region.  Caller provides
@@ -215,6 +262,7 @@ struct vfio_device_info {
  * intended to describe MMIO, I/O port, as well as bus specific
  * regions (ex. PCI config space).  Zero sized regions may be used
  * to describe unimplemented regions (ex. unimplemented PCI BARs).
+ * Return: 0 on success, -errno on failure.
  */
 struct vfio_region_info {
 	__u32	argsz;
@@ -226,11 +274,10 @@ struct vfio_region_info {
 	__u64	size;		/* Region size (bytes) */
 	__u64	offset;		/* Region offset from start of device fd */
 };
-
-#define VFIO_DEVICE_GET_REGION_INFO	_IO(VFIO_TYPE, VFIO_BASE + 9)
+#define VFIO_DEVICE_GET_REGION_INFO	_IO(VFIO_TYPE, VFIO_BASE + 12)
 
 /**
- * VFIO_DEVICE_GET_IRQ_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 10,
+ * VFIO_DEVICE_GET_IRQ_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 13,
  *				    struct vfio_irq_info)
  *
  * Retrieve information about a device IRQ.  Caller provides
@@ -271,11 +318,10 @@ struct vfio_irq_info {
 	__u32	index;		/* IRQ index */
 	__s32	count;		/* Number of IRQs within this index */
 };
-
-#define VFIO_DEVICE_GET_IRQ_INFO	_IO(VFIO_TYPE, VFIO_BASE + 10)
+#define VFIO_DEVICE_GET_IRQ_INFO	_IO(VFIO_TYPE, VFIO_BASE + 13)
 
 /**
- * VFIO_DEVICE_SET_IRQS - _IOW(VFIO_TYPE, VFIO_BASE + 11, struct vfio_irq_set)
+ * VFIO_DEVICE_SET_IRQS - _IOW(VFIO_TYPE, VFIO_BASE + 14, struct vfio_irq_set)
  *
  * Set signaling, masking, and unmasking of interrupts.  Caller provides
  * struct vfio_irq_set with all fields set.  'start' and 'count' indicate
@@ -326,8 +372,7 @@ struct vfio_irq_set {
 	__s32	count;
 	__u8	data[];
 };
-
-#define VFIO_DEVICE_SET_IRQS		_IO(VFIO_TYPE, VFIO_BASE + 11)
+#define VFIO_DEVICE_SET_IRQS		_IO(VFIO_TYPE, VFIO_BASE + 14)
 
 #define VFIO_IRQ_SET_DATA_TYPE_MASK	(VFIO_IRQ_SET_DATA_NONE | \
 					 VFIO_IRQ_SET_DATA_BOOL | \
@@ -336,12 +381,11 @@ struct vfio_irq_set {
 					 VFIO_IRQ_SET_ACTION_UNMASK | \
 					 VFIO_IRQ_SET_ACTION_TRIGGER)
 /**
- * VFIO_DEVICE_RESET - _IO(VFIO_TYPE, VFIO_BASE + 12)
+ * VFIO_DEVICE_RESET - _IO(VFIO_TYPE, VFIO_BASE + 15)
  *
  * Reset a device.
  */
-#define VFIO_DEVICE_RESET		_IO(VFIO_TYPE, VFIO_BASE + 12)
-
+#define VFIO_DEVICE_RESET		_IO(VFIO_TYPE, VFIO_BASE + 15)
 
 /*
  * The VFIO-PCI bus driver makes use of the following fixed region and

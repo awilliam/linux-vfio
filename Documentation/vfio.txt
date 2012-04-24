@@ -33,176 +33,149 @@ secure, more featureful userspace driver environment than UIO.
 Groups, Devices, and IOMMUs
 -------------------------------------------------------------------------------
 
-Userspace drivers are primarily concerned with manipulating individual
-devices and setting up mappings in the IOMMU for those devices.
-Unfortunately, the IOMMU doesn't always have the granularity to track
-mappings for an individual device.  Sometimes this is a topology
-barrier, such as a PCIe-to-PCI bridge interposing the device and
-IOMMU, other times this is an IOMMU limitation.  In any case, the
-reality is that devices are not always independent with respect to the
-IOMMU.  Translations setup for one device can be used by another
-device in these scenarios.
+Devices are the main target of any I/O driver.  Devices typically
+create a programming interface made up of I/O access, interrupts,
+and DMA.  Without going into the details of each of these, DMA is
+by far the most critical aspect for maintaining a secure environment
+as allowing a device read-write access to system memory imposes the
+greatest risk to the overall system integrity.
 
-The IOMMU API exposes these relationships by identifying an "IOMMU
-group" for these dependent devices.  Devices on the same bus with the
-same IOMMU group (or just "group" for this document) are not isolated
-from each other with respect to DMA mappings.  For userspace usage,
-this logically means that instead of being able to grant ownership of
-an individual device, we must grant ownership of a group, which may
-contain one or more devices.
+To help mitigate this risk, many modern IOMMUs now incorporate
+isolation properties into what was, in many cases, an interface only
+meant for translation (ie. solving the addressing problems of devices
+with limited address spaces).  With this, devices can now be isolated
+from each other and from arbitrary memory access, thus allowing
+things like secure direct assignment of devices into virtual machines.
 
-These groups therefore become a fundamental component of VFIO and the
-working unit we use for exposing devices and granting permissions to
-userspace.  In addition, VFIO make efforts to ensure the integrity of
-the group for user access.  This includes ensuring that all devices
-within the group are controlled by VFIO (vs native host drivers)
-before allowing a user to access any member of the group or the IOMMU
-mappings, as well as maintaining the group viability as devices are
-dynamically added or removed from the system.
+This isolation is not always at the granularity of a single device
+though.  Even when an IOMMU is capable of this, properties of devices,
+interconnects, and IOMMU topologies can each reduce this isolation.
+For instance, an individual device may be part of a larger multi-
+function enclosure.  While the IOMMU may be able to distinguish
+between devices within the enclosure, the enclosure may not require
+transactions between devices to reach the IOMMU.  Examples of this
+could be anything from a multi-fuction PCI device with backdoors
+between functions to a non-PCI-ACS (Access Control Services) capable
+bridge allowing redirection without reaching the IOMMU.  Topology
+can also play a factor in terms of hiding devices.  A PCIe-to-PCI
+bridge masks the devices behind it, making transaction appear as if
+from the bridge itself.  Obviously IOMMU design plays a major factor
+as well.
 
-To access a device through VFIO, a user must open a character device
-for the group that the device belongs to and then issue an ioctl to
-retrieve a file descriptor for the individual device.  This ensures
-that the user has permissions to the group (file based access to the
-/dev entry) and allows a check point at which VFIO can deny access to
-the device if the group is not viable (all devices within the group
-controlled by VFIO).  A file descriptor for the IOMMU is obtain in the
-same fashion.
+Therefore, while for the most part an IOMMU may have device level
+granularity, any system is suseptible to reduced granularity.  The
+IOMMU API therefore supports a notion of IOMMU groups.  A group is
+a set of devices which is isolatable from all other devices in the
+system.  Groups are therefore the unit of ownership used by VFIO.
 
-VFIO defines a standard set of APIs for access to devices and a
-modular interface for adding new, bus-specific VFIO device drivers.
-We call these "VFIO bus drivers".  The vfio-pci module is an example
-of a bus driver for exposing PCI devices.  When the bus driver module
-is loaded it enumerates all of the devices for it's bus, registering
-each device with the vfio core along with a set of callbacks.  For
-buses that support hotplug, the bus driver also adds itself to the
-notification chain for such events.  The callbacks registered with
-each device implement the VFIO device access API for that bus.
+While the group is the minimum granularity that must be used to
+ensure secure user access, it's not necessarily the preferred
+granularity.  In IOMMUs which make use of page tables, it may be
+possible to share a set of page tables between different groups,
+reducing the overhead both to the platform (reduced TLB thrashing,
+reduced duplicate page tables), and to the user (programming only
+a single set of translations).  For this reason, VFIO makes use of
+a container class, which may hold one or more groups.  A container
+is created by simply opening the /dev/vfio/vfio character device.
+
+On it's own, the container provides little functionality, with all
+but a couple version and extension query interfaces locked away.
+The user needs to add a group into the container for the next level
+of functionality.  To do this, the user first needs to identify the
+group associated with the desired device.  This can be done using
+the sysfs links described in the example below.  By unbinding the
+device from the host driver and binding it to a VFIO driver, a new
+VFIO group will appear for the group as /dev/vfio/$GROUP, where
+$GROUP is the IOMMU group number of which the device is a member.
+If the IOMMU group contains multiple devices, each will need to
+be bound to a VFIO driver before operations on the VFIO group
+are allowed (it's also sufficient to only unbind the device from
+host drivers if a VFIO driver is unavailable; this will make the
+group available, but not that particular device).  TBD - interface
+for disabling driver probing/locking a device.
+
+Once the group is ready, it may be added to the container by opening
+the VFIO group character device (/dev/vfio/$GROUP) and using the
+VFIO_GROUP_SET_CONTAINER ioctl, passing the file descriptor of the
+previously opened container file.  If desired and if the IOMMU driver
+supports sharing the IOMMU context between groups, multiple groups may
+be set to the same container.  If a group fails to set to a container
+with existing groups, a new empty container will need to be used
+instead.
+
+With a group (or groups) attached to a container, the remaining
+ioctls become available, enabling access to the VFIO IOMMU interfaces.
+Additionally, it now becomes possible to get file descriptors for each
+device within a group using an ioctl on the VFIO group file descriptor.
 
 The VFIO device API includes ioctls for describing the device, the I/O
 regions and their read/write/mmap offsets on the device descriptor, as
 well as mechanisms for describing and registering interrupt
 notifications.
 
-The VFIO IOMMU object is accessed in a similar way; an ioctl on the
-group provides a file descriptor for programming the IOMMU.  Like
-devices, the IOMMU file descriptor is only accessible when a group is
-viable.  The API for the IOMMU is effectively a userspace extension of
-the kernel IOMMU API.  The IOMMU provides an ioctl to describe the
-IOMMU domain as well as to setup and teardown DMA mappings.  As the
-IOMMU API is extended to support more esoteric IOMMU implementations,
-it's expected that the VFIO interface will also evolve.
-
-To facilitate this evolution, all of the VFIO interfaces are designed
-for extensions.  Particularly, for all structures passed via ioctl, we
-include a structure size and flags field.  We also define the ioctl
-request to be independent of passed structure size.  This allows us to
-later add structure fields and define flags as necessary.  It's
-expected that each additional field will have an associated flag to
-indicate whether the data is valid.  Additionally, we provide an
-"info" ioctl for each file descriptor, which allows us to flag new
-features as they're added (ex. an IOMMU domain configuration ioctl).
-
-The final aspect of VFIO is the notion of merging groups.  In both the
-assignment of devices to virtual machines and the pure userspace
-driver model, it's expect that a single user instance is likely to
-have multiple groups in use simultaneously.  For a virtual machine,
-this can happen simply by assigning multiple devices to a guest that
-belong to different groups.  If these groups are all using the same
-set of IOMMU mappings, the overhead of userspace setting up and
-tearing down the mappings, as well as the internal IOMMU driver
-overhead of managing those mappings can be non-trivial.  On x86, the
-IOMMU will often map the full guest memory, allowing for transparent
-device assignment.  Therefore any device assigned to a given guest
-will make use of identical IOMMU mappings.  Some IOMMU implementations
-are able to easily reduce the overhead this generates by simply using
-the same set of page tables across multiple groups.  VFIO allows users
-to take advantage of this option by merging groups together,
-effectively creating a super group (NB IOMMU groups only define the
-minimum granularity).
-
-A user can attempt to merge groups together by calling the merge ioctl
-on one group (the "merger") and pass the file descriptor for the group
-to be merged in (the "mergee").  Note that existing DMA mappings
-cannot be atomically merged between groups, it's therefore a
-requirement that the mergee group is not in use.  This is enforced by
-not allowing open device or iommu file descriptors on the mergee group
-at the time of merging.  The merger group can be actively in use at
-the time of merging.  Likewise, to unmerge a group, none of the device
-file descriptors for the group being removed can be in use.  The
-remaining merged group can be actively in use.
-
-If the groups cannot be merged, the ioctl will fail and the user will
-need to manage the groups independently.  Users should have no
-expectation for group merging to be successful.  Some platforms may
-not support it at all, others may only enable merging of sufficiently
-similar groups.  If the ioctl succeeds, then the group file
-descriptors are effectively fungible between the groups.  That is,
-instead of their actions being isolated to the individual group, each
-of them are gateways into the combined, merged group.  For instance,
-retrieving an IOMMU file descriptor from any group returns a reference
-to the same object, mappings to that IOMMU descriptor are visible to
-all devices in the merged group, and device descriptors can be
-retrieved for any device in the merged group from any one of the group
-file descriptors.  In effect, a user can manage devices and the IOMMU
-of a merged group using a single file descriptor (saving the other
-merged group file descriptors away only for later unmerging) without
-the permission complications of creating a separate "super group"
-character device.
-
 VFIO Usage Example
 -------------------------------------------------------------------------------
 
 Assume user wants to access PCI device 0000:06:0d.0
 
-$ cat /sys/bus/pci/devices/0000:06:0d.0/iommu_group
-240
+$ readlink /sys/bus/pci/devices/0000:06:0d.0/iommu_group
+../../../../kernel/iommu_groups/26
 
-Since this device is on the "pci" bus, the user can then find the
-character device for interacting with the VFIO group as:
+This device is therefore in IOMMU group 26.  This device is on the
+pci bus, therefore the user will make use of vfio-pci to manage the
+group:
 
-$ ls -l /dev/vfio/pci:240
-crw-rw---- 1 root root 252, 27 Dec 15 15:13 /dev/vfio/pci:240
+# modprobe vfio-pci
 
-We can also examine other members of the group through sysfs:
+Binding this device to the vfio-pci driver creates the VFIO group
+character devices for this group:
 
-$ ls -l /sys/devices/virtual/vfio/pci:240/devices/
+$ lspci -n -s 0000:06:0d.0
+06:0d.0 0401: 1102:0002 (rev 08)
+# echo 0000:06:0d.0 > /sys/bus/pci/devices/0000:06:0d.0/driver/unbind
+# echo 1102 0002 > /sys/bus/pci/drivers/vfio/new_id
+# echo 0000:06:0d.0 > /sys/bus/pci/drivers/vfio/bind
+
+Now we need to look at what other devices are in the group to free
+it for use by VFIO:
+
+$ ls -l /sys/bus/pci/devices/0000:06:0d.0/iommu_group/devices
 total 0
-lrwxrwxrwx 1 root root 0 Dec 20 12:01 0000:06:0d.0 -> \
-		../../../../pci0000:00/0000:00:1e.0/0000:06:0d.0
-lrwxrwxrwx 1 root root 0 Dec 20 12:01 0000:06:0d.1 -> \
-		../../../../pci0000:00/0000:00:1e.0/0000:06:0d.1
+lrwxrwxrwx. 1 root root 0 Apr 23 16:13 0000:00:1e.0 ->
+	../../../../devices/pci0000:00/0000:00:1e.0
+lrwxrwxrwx. 1 root root 0 Apr 23 16:13 0000:06:0d.0 ->
+	../../../../devices/pci0000:00/0000:00:1e.0/0000:06:0d.0
+lrwxrwxrwx. 1 root root 0 Apr 23 16:13 0000:06:0d.1 ->
+	../../../../devices/pci0000:00/0000:00:1e.0/0000:06:0d.1
 
-This group therefore contains two devices[4].  VFIO will prevent
-device or iommu manipulation unless all group members are attached to
-the vfio bus driver, so we simply unbind the devices from their
-current driver and rebind them to vfio:
+This device is behind a PCIe-to-PCI bridge[4], therefore we also
+need to add device 0000:06:0d.1 to the group following the same
+procedure as above.  Device 0000:00:1e.0 is a bridge that does
+not currently have a host driver, therefore it's not required to
+bind this device to the vfio-pci driver (vfio-pci does not currently
+support PCI bridges).
 
-#!/bin/sh
-for i in /sys/devices/virtual/vfio/pci:240/devices/*; do
-	dir=$(readlink -f $i)
-	if [ -L $dir/driver ]; then
-		echo $(basename $i) > $dir/driver/unbind
-	fi
-	vendor=$(cat $dir/vendor)
-	device=$(cat $dir/device)
-	echo $vendor $device > /sys/bus/pci/drivers/vfio/new_id
-	echo $(basename $i) > /sys/bus/pci/drivers/vfio/bind
-done
+The final step is to provide the user with access to the group if
+unprivleged operation is desired (note that /dev/vfio/vfio provides
+no capabilities on it's own and is therefore expected to be set to
+mode 0666 by the system).
 
-# chown user:user /dev/vfio/pci:240
+# chown user:user /dev/vfio/26
 
 The user now has full access to all the devices and the iommu for this
 group and can access them as follows:
 
-	int group, iommu, device, i;
+	int container, group, device, i;
 	struct vfio_group_info group_info = { .argsz = sizeof(group_info) };
 	struct vfio_iommu_info iommu_info = { .argsz = sizeof(iommu_info) };
 	struct vfio_dma_map dma_map = { .argsz = sizeof(dma_map) };
 	struct vfio_device_info device_info = { .argsz = sizeof(device_info) };
 
+	/* Create a new container */
+	container = open("/dev/vfio/vfio, O_RDWR);
+
 	/* Open the group */
-	group = open("/dev/vfio/pci:240", O_RDWR);
+	group = open("/dev/vfio/26", O_RDWR);
 
 	/* Test the group is viable and available */
 	ioctl(group, VFIO_GROUP_GET_INFO, &group_info);
@@ -213,11 +186,14 @@ group and can access them as follows:
 	if ((group_info.flags & VFIO_GROUP_FLAGS_MM_LOCKED))
 		/* Already in use by someone else */
 
-	/* Get a file descriptor for the IOMMU */
-	iommu = ioctl(group, VFIO_GROUP_GET_IOMMU_FD);
+	/* Add the group to the container */
+	ioctl(group, VFIO_GROUP_SET_CONTAINER, &container);
 
 	/* Test the IOMMU is what we expect */
-	ioctl(iommu, VFIO_IOMMU_GET_INFO, &iommu_info);
+	ioctl(container, VFIO_GET_IOMMU_INFO, &iommu_info);
+
+	/* Enable the IOMMU */
+	ioctl(container, VFIO_ENABLE_IOMMU);
 
 	/* Allocate some space and setup a DMA mapping */
 	dma_map.vaddr = mmap(0, 1024 * 1024, PROT_READ | PROT_WRITE,
@@ -226,7 +202,7 @@ group and can access them as follows:
 	dma_map.iova = 0; /* 1MB starting at 0x0 from device view */
 	dma_map.flags = VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE;
 
-	ioctl(iommu, VFIO_IOMMU_MAP_DMA, &dma_map);
+	ioctl(container, VFIO_MAP_DMA, &dma_map);
 
 	/* Get a file descriptor for the device */
 	device = ioctl(group, VFIO_GROUP_GET_DEVICE_FD, "0000:06:0d.0");
@@ -266,27 +242,24 @@ Please see include/linux/vfio.h for complete API documentation.
 VFIO bus driver API
 -------------------------------------------------------------------------------
 
-Bus drivers, such as PCI, have three jobs:
- 1) Add/remove devices from vfio
- 2) Provide vfio_device_ops for device access
- 3) Device binding and unbinding
+VFIO bus drivers, such as vfio-pci make use of only a few interfaces
+into VFIO core.  When devices are bound and unbound to the driver,
+the driver should call vfio_add_group_dev() and vfio_del_group_dev()
+respectively:
 
-When initialized, the bus driver should enumerate the devices on its
-bus and call vfio_group_add_dev() for each device.  If the bus
-supports hotplug, notifiers should be enabled to track devices being
-added and removed.  vfio_group_del_dev() removes a previously added
-device from vfio.
+extern int vfio_add_group_dev(struct iommu_group *iommu_group,
+                              struct device *dev,
+                              const struct vfio_device_ops *ops,
+                              void *device_data);
 
-extern int vfio_group_add_dev(struct device *dev,
-                              const struct vfio_device_ops *ops);
-extern void vfio_group_del_dev(struct device *dev);
+extern void *vfio_del_group_dev(struct device *dev);
 
-Adding a device registers a vfio_device_ops function pointer structure
-for the device:
+vfio_add_group_dev() indicates to the core to begin tracking the
+specified iommu_group and register the specified dev as owned by
+a VFIO bus driver.  The driver provides an ops structre for callbacks
+similar to a file operations structure:
 
 struct vfio_device_ops {
-	bool	(*match)(struct device *dev, char *buf);
-	int	(*claim)(struct device *dev);
 	int	(*open)(void *device_data);
 	void	(*release)(void *device_data);
 	ssize_t	(*read)(void *device_data, char __user *buf,
@@ -298,35 +271,14 @@ struct vfio_device_ops {
 	int	(*mmap)(void *device_data, struct vm_area_struct *vma);
 };
 
-For buses supporting hotplug, all functions are required to be
-implemented.  Non-hotplug buses do not need to implement claim().
-
-match() provides a device specific method for associating a struct
-device to a user provided string.  Many drivers may simply strcmp the
-buffer to dev_name().
-
-claim() is used when a device is hot-added to a group that is already
-in use.  This is how VFIO requests that a bus driver manually takes
-ownership of a device.  The expected call path for this is triggered
-from the bus add notifier.  The bus driver calls vfio_group_add_dev for
-the newly added device, vfio-core determines this group is already in
-use and calls claim on the bus driver.  This triggers the bus driver
-to call it's own probe function, including calling vfio_bind_dev to
-mark the device as controlled by vfio.  The device is then available
-for use by the group.
-
-The remaining vfio_device_ops are similar to a simplified struct
-file_operations except a device_data pointer is provided rather than a
-file pointer.  The device_data is an opaque structure registered by
-the bus driver when a device is bound to the vfio bus driver:
-
-extern int vfio_bind_dev(struct device *dev, void *device_data);
-extern void *vfio_unbind_dev(struct device *dev);
-
-When the device is unbound from the driver, the bus driver will call
-vfio_unbind_dev() which will return the device_data for any bus driver
-specific cleanup and freeing of the structure.  The vfio_unbind_dev
-call may block if the group is currently in use.
+Each function is passed the device_data that was originally registered
+in the vfio_add_group_dev() call above.  This allows the bus driver
+an easy place to store it's opaque, private data.  The open/release
+callbacks are issued when a new file descriptor is created for a
+device (via VFIO_GROUP_GET_DEVICE_FD).  The ioctl interface provides
+a direct pass through for VFIO_DEVICE_* ioctls.  The read/write/mmap
+interfaces implement the device region access defined by the device's
+own VFIO_DEVICE_GET_REGION_INFO ioctl.
 
 -------------------------------------------------------------------------------
 
