@@ -713,8 +713,7 @@ static int __vfio_container_attach_groups(struct vfio_container *container,
 	int ret = -ENODEV;
 
 	list_for_each_entry(group, &container->group_list, container_next) {
-		ret = driver->ops->ioctl(data, VFIO_IOMMU_ATTACH_GROUP,
-					 (unsigned long)group->iommu_group);
+		ret = driver->ops->attach_group(data, group->iommu_group);
 		if (ret)
 			goto unwind;
 	}
@@ -724,8 +723,7 @@ static int __vfio_container_attach_groups(struct vfio_container *container,
 unwind:
 	list_for_each_entry_continue_reverse(group, &container->group_list,
 					     container_next) {
-		driver->ops->ioctl(data, VFIO_IOMMU_DETACH_GROUP,
-				   (unsigned long)group->iommu_group);
+		driver->ops->detach_group(data, group->iommu_group);
 	}
 
 	return ret;
@@ -938,8 +936,7 @@ static int vfio_group_unset_container(struct vfio_group *group)
 	data = container->iommu_data;
 
 	if (driver)
-		driver->ops->ioctl(data, VFIO_IOMMU_DETACH_GROUP,
-				   (unsigned long)group->iommu_group);
+		driver->ops->detach_group(data, group->iommu_group);
 
 	list_del(&group->container_next);
 
@@ -985,8 +982,7 @@ static int vfio_group_set_container(struct vfio_group *group, int container_fd)
 	data = container->iommu_data;
 
 	if (driver) {
-		ret = driver->ops->ioctl(data, VFIO_IOMMU_ATTACH_GROUP,
-					 (unsigned long)group->iommu_group);
+		ret = driver->ops->attach_group(data, group->iommu_group);
 		if (ret)
 			goto unlock_out;
 	}

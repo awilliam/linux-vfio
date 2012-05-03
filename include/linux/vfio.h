@@ -59,7 +59,9 @@ struct vfio_iommu_driver_ops {
 			 size_t count, loff_t *size);
 	long	(*ioctl)(void *iommu_data, unsigned int cmd,
 			 unsigned long arg);
-	int	(*mmap)(void *device_data, struct vm_area_struct *vma);
+	int	(*mmap)(void *iommu_data, struct vm_area_struct *vma);
+	int	(*attach_group)(void *iommu_data, struct iommu_group *group);
+	void	(*detach_group)(void *iommu_data, struct iommu_group *group);
 
 };
 
@@ -136,9 +138,6 @@ void vfio_unregister_iommu_driver(struct module *module,
  */
 #define VFIO_SET_IOMMU			_IO(VFIO_TYPE, VFIO_BASE + 2)
 
-/* XXX These should not be exposed to user, should even disallow access */
-#define VFIO_IOMMU_ATTACH_GROUP		_IO(VFIO_TYPE, VFIO_BASE + 3)
-#define VFIO_IOMMU_DETACH_GROUP		_IO(VFIO_TYPE, VFIO_BASE + 3)
 /* -------- IOCTLs for GROUP file descriptors (/dev/vfio/$GROUP) -------- */
 
 /**
