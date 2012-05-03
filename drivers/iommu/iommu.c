@@ -213,7 +213,7 @@ int iommu_group_add_device(struct iommu_group *group, struct device *dev)
 
 	/* Notify any listeners about change to group. */
 	blocking_notifier_call_chain(&group->notifier,
-				     IOMMU_GROUP_ADD_DEVICE, dev);
+				     IOMMU_GROUP_NOTIFY_ADD_DEVICE, dev);
 	return 0;
 }
 
@@ -231,7 +231,7 @@ void iommu_group_remove_device(struct device *dev)
 
 	/* Pre-notify listeners that a device is being removed. */
 	blocking_notifier_call_chain(&group->notifier,
-				     IOMMU_GROUP_DEL_DEVICE, dev);
+				     IOMMU_GROUP_NOTIFY_DEL_DEVICE, dev);
 
 	mutex_lock(&group->mutex);
 	list_for_each_entry(device, &group->devices, list) {
@@ -363,12 +363,18 @@ static int add_iommu_group(struct device *dev, void *data)
 	return ops->add_device(dev);
 }
 
-static int iommu_device_notifier(struct notifier_block *nb,
-				 unsigned long action, void *data)
+static int iommu_bus_notifier(struct notifier_block *nb,
+			      unsigned long action, void *data)
 {
 	struct device *dev = data;
 	struct iommu_ops *ops = dev->bus->iommu_ops;
+	struct iommu_group *group;
+	unsigned long group_action = 0;
 
+	/*
+ 	 * ADD/DEL call into iommu driver ops if provided, which may
+	 * result in ADD/DEL notifiers to group->notifier
+	 */
 	if (action == BUS_NOTIFY_ADD_DEVICE) {
 		if (ops->add_device)
 			return ops->add_device(dev);
@@ -379,16 +385,44 @@ static int iommu_device_notifier(struct notifier_block *nb,
 		}
 	}
 
+	/*
+	 * Remaining BUS_NOTIFYs get filtered and republished to the
+	 * group, if anyone is listening
+	 */
+	group = iommu_group_get(dev);
+	if (!group)
+		return 0;
+
+	switch (action) {
+	case BUS_NOTIFY_BIND_DRIVER:
+		group_action = IOMMU_GROUP_NOTIFY_BIND_DRIVER;
+		break;
+	case BUS_NOTIFY_BOUND_DRIVER:
+		group_action = IOMMU_GROUP_NOTIFY_BOUND_DRIVER;
+		break;
+	case BUS_NOTIFY_UNBIND_DRIVER:
+		group_action = IOMMU_GROUP_NOTIFY_UNBIND_DRIVER;
+		break;
+	case BUS_NOTIFY_UNBOUND_DRIVER:
+		group_action = IOMMU_GROUP_NOTIFY_UNBOUND_DRIVER;
+		break;
+	}
+
+	if (group_action)
+		blocking_notifier_call_chain(&group->notifier,
+					     group_action, dev);
+
+	iommu_group_put(group);
 	return 0;
 }
 
-static struct notifier_block iommu_device_nb = {
-	.notifier_call = iommu_device_notifier,
+static struct notifier_block iommu_bus_nb = {
+	.notifier_call = iommu_bus_notifier,
 };
 
 static void iommu_bus_init(struct bus_type *bus, struct iommu_ops *ops)
 {
-	bus_register_notifier(bus, &iommu_device_nb);
+	bus_register_notifier(bus, &iommu_bus_nb);
 	bus_for_each_dev(bus, NULL, ops, add_iommu_group);
 }
 

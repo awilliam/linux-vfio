@@ -82,8 +82,12 @@ struct iommu_ops {
 	unsigned long pgsize_bitmap;
 };
 
-#define IOMMU_GROUP_ADD_DEVICE		1 /* Device added to group */
-#define IOMMU_GROUP_DEL_DEVICE		2 /* Device being removed from group */
+#define IOMMU_GROUP_NOTIFY_ADD_DEVICE		1 /* Device added */
+#define IOMMU_GROUP_NOTIFY_DEL_DEVICE		2 /* Pre Device removed */
+#define IOMMU_GROUP_NOTIFY_BIND_DRIVER		3 /* Pre Driver bind */
+#define IOMMU_GROUP_NOTIFY_BOUND_DRIVER		4 /* Post Driver bind */
+#define IOMMU_GROUP_NOTIFY_UNBIND_DRIVER	5 /* Pre Driver unbind */
+#define IOMMU_GROUP_NOTIFY_UNBOUND_DRIVER	6 /* Post Driver unbind */
 
 extern int bus_set_iommu(struct bus_type *bus, struct iommu_ops *ops);
 extern bool iommu_present(struct bus_type *bus);

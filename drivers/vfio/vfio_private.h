@@ -11,26 +11,7 @@
  * Author: Tom Lyon, pugs@cisco.com
  */
 
-#include <linux/list.h>
-#include <linux/mutex.h>
-
 #ifndef VFIO_PRIVATE_H
 #define VFIO_PRIVATE_H
-
-struct vfio_iommu {
-	struct iommu_domain		*domain;
-	struct bus_type			*bus;
-	struct mutex			lock;
-	struct list_head		dma_list;
-	struct mm_struct		*mm;
-	struct list_head		group_list;
-	int				refcnt;
-	bool				cache;
-};
-
-extern const struct file_operations vfio_iommu_fops;
-
-extern int vfio_release_iommu(struct vfio_iommu *iommu);
-extern void vfio_iommu_unmapall(struct vfio_iommu *iommu);
 
 #endif /* VFIO_PRIVATE_H */

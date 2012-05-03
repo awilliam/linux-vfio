@@ -12,6 +12,7 @@
 #define VFIO_H
 
 #include <linux/types.h>
+#include <asm/ioctl.h>
 
 #define VFIO_API_VERSION	0
 
@@ -40,12 +41,33 @@ struct vfio_device_ops {
 	int	(*mmap)(void *device_data, struct vm_area_struct *vma);
 };
 
-extern int vfio_add_group_dev(struct iommu_group *iommu_group,
-			      struct device *dev,
+extern int vfio_add_group_dev(struct device *dev,
 			      const struct vfio_device_ops *ops,
 			      void *device_data);
 
 extern void *vfio_del_group_dev(struct device *dev);
+
+/**
+ * struct vfio_iommu_driver_ops - VFIO IOMMU driver callbacks
+ */
+struct vfio_iommu_driver_ops {
+	void	*(*open)(unsigned long arg);
+	void	(*release)(void *iommu_data); 
+	ssize_t	(*read)(void *iommu_data, char __user *buf,
+			size_t count, loff_t *ppos);
+	ssize_t	(*write)(void *iommu_data, const char __user *buf,
+			 size_t count, loff_t *size);
+	long	(*ioctl)(void *iommu_data, unsigned int cmd,
+			 unsigned long arg);
+	int	(*mmap)(void *device_data, struct vm_area_struct *vma);
+
+};
+
+int vfio_register_iommu_driver(struct module *module,
+			       struct vfio_iommu_driver_ops *ops);
+
+void vfio_unregister_iommu_driver(struct module *module,
+				  struct vfio_iommu_driver_ops *ops);
 
 /**
  * offsetofend(TYPE, MEMBER)
@@ -93,7 +115,7 @@ extern void *vfio_del_group_dev(struct device *dev);
 #define VFIO_GET_API_VERSION		_IO(VFIO_TYPE, VFIO_BASE + 0)
 
 /**
- * VFIO_CHECK_EXTENSION - _IO(VFIO_TYPE, VFIO_BASE + 1)
+ * VFIO_CHECK_EXTENSION - _IOW(VFIO_TYPE, VFIO_BASE + 1, __s32)
  *
  * Check whether an extension is supported.
  * Return: 0 if not supported, 1 (or some other positive integer) if supported.
@@ -102,94 +124,39 @@ extern void *vfio_del_group_dev(struct device *dev);
 #define VFIO_CHECK_EXTENSION		_IO(VFIO_TYPE, VFIO_BASE + 1)
 
 /**
- * VFIO_GET_IOMMU_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 2, struct vfio_iommu_info)
+ * VFIO_SET_IOMMU - _IOW(VFIO_TYPE, VFIO_BASE + 2, __s32)
  *
- * Retrieve information about the IOMMU.  Fills in provided
- * struct vfio_iommu_info.  Caller sets argsz.
- * Return: 0 on success, -errno on failure.
+ * Set the iommu to the given type.  The type must be supported by an
+ * iommu driver as verified by calling CHECK_EXTENSION using the same
+ * type.  A group must be set to this file descriptor before this
+ * ioctl is available.  The IOMMU interfaces enabled by this call are
+ * specific to the value set.
+ * Return: 0 on success, -errno on failure
  * Availability: When VFIO group attached
  */
-struct vfio_iommu_info {
-	__u32	argsz;
-	__u32	flags;
-	__u64	iova_start;	/* IOVA base address */
-	__u64	iova_size;	/* IOVA window size */
-	__u64	iova_entries;	/* Number mapping entries available */
-	__u64	iova_pgsizes;	/* Bitmap of supported page sizes */
-};
-#define	VFIO_GET_IOMMU_INFO		_IO(VFIO_TYPE, VFIO_BASE + 2)
+#define VFIO_SET_IOMMU			_IO(VFIO_TYPE, VFIO_BASE + 2)
 
-/**
- * VFIO_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 3, struct vfio_dma_map)
- *
- * Map process virtual addresses to IO virtual addresses using the
- * provided struct vfio_dma_map.  Caller sets argsz.  READ &/ WRITE required.
- * Return: 0 on success, -errno on failure.
- * Availability: When VFIO group attached
- */
-struct vfio_dma_map {
-	__u32	argsz;
-	__u32	flags;
-#define VFIO_DMA_MAP_FLAG_READ	(1 << 0)	/* readable from device */
-#define VFIO_DMA_MAP_FLAG_WRITE	(1 << 1)	/* writable from device */
-	__u64	vaddr;		/* Process virtual address */
-	__u64	iova;		/* IO virtual address */
-	__u64	size;		/* Size of mapping (bytes) */
-};
-#define	VFIO_MAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 3)
-
-/**
- * VFIO_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 4, struct vfio_dma_unmap)
- *
- * Unmap IO virtual addresses using the provided struct vfio_dma_unmap.
- * Caller sets argsz.
- * Return: 0 on success, -errno on failure.
- * Availability: When VFIO group attached
- */
-struct vfio_dma_unmap {
-	__u32	argsz;
-	__u32	flags;
-	__u64	iova;		/* IO virtual address */
-	__u64	size;		/* Size of mapping (bytes) */
-};
-#define	VFIO_UNMAP_DMA		_IO(VFIO_TYPE, VFIO_BASE + 4)
-
-/**
- * VFIO_ENABLE_IOMMU - _IO(VFIO_TYPE, VFIO_BASE + 5)
- *
- * Enable IOMMU translations for the current context.
- * Return: 0 on success, -errno on failure.
- * Availability: When VFIO group attached
- */
-#define VFIO_ENABLE_IOMMU	_IO(VFIO_TYPE, VFIO_BASE + 5)
-
-/**
- * VFIO_DISABLE_IOMMU - _IO(VFIO_TYPE, VFIO_BASE + 6)
- *
- * Disable IOMMU translations for the current context.
- * Return: 0 on success, -errno on failure.
- * Availability: When VFIO group attached
- */
-#define VFIO_DISBLE_IOMMU	_IO(VFIO_TYPE, VFIO_BASE + 6)
-
+/* XXX These should not be exposed to user, should even disallow access */
+#define VFIO_IOMMU_ATTACH_GROUP		_IO(VFIO_TYPE, VFIO_BASE + 3)
+#define VFIO_IOMMU_DETACH_GROUP		_IO(VFIO_TYPE, VFIO_BASE + 3)
 /* -------- IOCTLs for GROUP file descriptors (/dev/vfio/$GROUP) -------- */
 
 /**
- * VFIO_GROUP_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 7, struct vfio_group_info)
+ * VFIO_GROUP_GET_STATUS - _IOR(VFIO_TYPE, VFIO_BASE + 7,
+ * 						struct vfio_group_status)
  *
  * Retrieve information about the group.  Fills in provided
  * struct vfio_group_info.  Caller sets argsz.
  * Return: 0 on succes, -errno on failure.
  * Availability: Always
  */
-struct vfio_group_info {
+struct vfio_group_status {
 	__u32	argsz;
 	__u32	flags;
 #define VFIO_GROUP_FLAGS_VIABLE		(1 << 0)
-#define VFIO_GROUP_FLAGS_MM_LOCKED	(1 << 1)
-#define VFIO_GROUP_FLAGS_CONTAINER_SET	(1 << 2)
+#define VFIO_GROUP_FLAGS_CONTAINER_SET	(1 << 1)
 };
-#define VFIO_GROUP_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 7)
+#define VFIO_GROUP_GET_STATUS		_IO(VFIO_TYPE, VFIO_BASE + 7)
 
 /**
  * VFIO_GROUP_SET_CONTAINER - _IOW(VFIO_TYPE, VFIO_BASE + 8, __s32)
