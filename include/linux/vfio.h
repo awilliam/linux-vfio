@@ -30,6 +30,7 @@
  * @mmap: Perform mmap(2) on a region of the device file descriptor
  */
 struct vfio_device_ops {
+	char	*name;
 	int	(*open)(void *device_data);
 	void	(*release)(void *device_data);
 	ssize_t	(*read)(void *device_data, char __user *buf,
@@ -51,25 +52,27 @@ extern void *vfio_del_group_dev(struct device *dev);
  * struct vfio_iommu_driver_ops - VFIO IOMMU driver callbacks
  */
 struct vfio_iommu_driver_ops {
-	void	*(*open)(unsigned long arg);
-	void	(*release)(void *iommu_data); 
-	ssize_t	(*read)(void *iommu_data, char __user *buf,
-			size_t count, loff_t *ppos);
-	ssize_t	(*write)(void *iommu_data, const char __user *buf,
-			 size_t count, loff_t *size);
-	long	(*ioctl)(void *iommu_data, unsigned int cmd,
-			 unsigned long arg);
-	int	(*mmap)(void *iommu_data, struct vm_area_struct *vma);
-	int	(*attach_group)(void *iommu_data, struct iommu_group *group);
-	void	(*detach_group)(void *iommu_data, struct iommu_group *group);
+	char		*name;
+	struct module	*owner;
+	void		*(*open)(unsigned long arg);
+	void		(*release)(void *iommu_data); 
+	ssize_t		(*read)(void *iommu_data, char __user *buf,
+				size_t count, loff_t *ppos);
+	ssize_t		(*write)(void *iommu_data, const char __user *buf,
+				 size_t count, loff_t *size);
+	long		(*ioctl)(void *iommu_data, unsigned int cmd,
+				 unsigned long arg);
+	int		(*mmap)(void *iommu_data, struct vm_area_struct *vma);
+	int		(*attach_group)(void *iommu_data,
+					struct iommu_group *group);
+	void		(*detach_group)(void *iommu_data,
+					struct iommu_group *group);
 
 };
 
-int vfio_register_iommu_driver(struct module *module,
-			       struct vfio_iommu_driver_ops *ops);
+extern int vfio_register_iommu_driver(const struct vfio_iommu_driver_ops *ops);
 
-void vfio_unregister_iommu_driver(struct module *module,
-				  struct vfio_iommu_driver_ops *ops);
+extern void vfio_unregister_iommu_driver(const struct vfio_iommu_driver_ops *ops);
 
 /**
  * offsetofend(TYPE, MEMBER)
@@ -88,6 +91,10 @@ void vfio_unregister_iommu_driver(struct module *module,
 #endif /* __KERNEL__ */
 
 /* Kernel & User level defines for VFIO IOCTLs. */
+
+/* Extensions */
+
+#define VFIO_X86_IOMMU		1
 
 /*
  * The IOCTL interface is designed for extensibility by embedding the
@@ -137,6 +144,55 @@ void vfio_unregister_iommu_driver(struct module *module,
  * Availability: When VFIO group attached
  */
 #define VFIO_SET_IOMMU			_IO(VFIO_TYPE, VFIO_BASE + 2)
+
+/* -------- API for x86 VFIO IOMMU -------- */
+
+/**
+ * VFIO_IOMMU_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 3, struct vfio_iommu_info)
+ *
+ * Retrieve information about the IOMMU object. Fills in provided
+ * struct vfio_iommu_info. Caller sets argsz.
+ */
+struct vfio_iommu_x86_info {
+	__u32	argsz;
+	__u32	flags;
+	__u64	iova_pgsizes;		/* Bitmap of supported page sizes */
+};
+
+#define VFIO_IOMMU_GET_INFO _IO(VFIO_TYPE, VFIO_BASE + 3)
+
+/**
+ * * VFIO_IOMMU_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 4, struct vfio_dma_map)
+ * *
+ * * Map process virtual addresses to IO virtual addresses using the
+ * * provided struct vfio_dma_map. Caller sets argsz. READ &/ WRITE required.
+ * */
+struct vfio_iommu_x86_dma_map {
+	__u32	argsz;
+	__u32 	flags;
+#define VFIO_DMA_MAP_FLAG_READ (1 << 0)		/* readable from device */
+#define VFIO_DMA_MAP_FLAG_WRITE (1 << 1)	/* writable from device */
+	__u64	 vaddr;				/* Process virtual address */
+	__u64	 iova;				/* IO virtual address */
+	__u64	 size;				/* Size of mapping (bytes) */
+};
+
+#define VFIO_IOMMU_MAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 4)
+
+/**
+ * * VFIO_IOMMU_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 5, struct vfio_dma_unmap)
+ * *
+ * * Unmap IO virtual addresses using the provided struct vfio_dma_unmap.
+ * * Caller sets argsz.
+ * */
+struct vfio_iommu_x86_dma_unmap {
+	__u32	argsz;
+	__u32	flags;
+	__u64	iova;				/* IO virtual address */
+	__u64	size;				/* Size of mapping (bytes) */
+};
+
+#define VFIO_IOMMU_UNMAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 5)
 
 /* -------- IOCTLs for GROUP file descriptors (/dev/vfio/$GROUP) -------- */
 

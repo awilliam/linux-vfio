@@ -1,5 +1,5 @@
 /*
- * VFIO: IOMMU DMA mapping support
+ * VFIO: IOMMU DMA mapping support for x86 (Intel VT-d & AMD-Vi)
  *
  * Copyright (C) 2012 Red Hat, Inc.  All rights reserved.
  *     Author: Alex Williamson <alex.williamson@redhat.com>
@@ -19,20 +19,36 @@
 #include <linux/iommu.h>
 #include <linux/module.h>
 #include <linux/mm.h>
+#include <linux/pci.h>		/* pci_bus_type */
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vfio.h>
 #include <linux/workqueue.h>
 
-#include "vfio_private.h"
+#define DRIVER_VERSION  "0.1"
+#define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
+#define DRIVER_DESC     "x86 IOMMU driver for VFIO"
 
-struct vfio_dma_map_entry {
-	struct list_head	list;
+struct vfio_iommu {
+	struct iommu_domain	*domain;
+	struct mutex		lock;
+	struct list_head	dma_list;
+	struct list_head	group_list;
+	bool			cache;
+};
+
+struct vfio_dma {
+	struct list_head	next;
 	dma_addr_t		iova;		/* Device address */
 	unsigned long		vaddr;		/* Process virtual addr */
 	long			npage;		/* Number of pages */
 	int			prot;		/* IOMMU_READ/WRITE */
+};
+
+struct vfio_group {
+	struct iommu_group	*iommu_group;
+	struct list_head	next;
 };
 
 /*
@@ -167,23 +183,6 @@ static void vfio_dma_unmap(struct vfio_iommu *iommu, dma_addr_t iova,
 	vfio_lock_acct(-unlocked);
 }
 
-/* Unmap ALL DMA regions */
-void vfio_iommu_unmapall(struct vfio_iommu *iommu)
-{
-	struct list_head *pos, *tmp;
-
-	mutex_lock(&iommu->lock);
-	list_for_each_safe(pos, tmp, &iommu->dma_list) {
-		struct vfio_dma_map_entry *dma;
-
-		dma = list_entry(pos, struct vfio_dma_map_entry, list);
-		vfio_dma_unmap(iommu, dma->iova, dma->npage, dma->prot);
-		list_del(&dma->list);
-		kfree(dma);
-	}
-	mutex_unlock(&iommu->lock);
-}
-
 static int vaddr_get_pfn(unsigned long vaddr, int prot, unsigned long *pfn)
 {
 	struct page *page[1];
@@ -283,15 +282,12 @@ static inline bool ranges_overlap(dma_addr_t start1, size_t size1,
 	return (size1 > 0 && size2 > 0);
 }
 
-static struct vfio_dma_map_entry *vfio_find_dma(struct vfio_iommu *iommu,
+static struct vfio_dma *vfio_find_dma(struct vfio_iommu *iommu,
 						dma_addr_t start, size_t size)
 {
-	struct list_head *pos;
+	struct vfio_dma *dma;
 
-	list_for_each(pos, &iommu->dma_list) {
-		struct vfio_dma_map_entry *dma;
-
-		dma = list_entry(pos, struct vfio_dma_map_entry, list);
+	list_for_each_entry(dma, &iommu->dma_list, next) {
 		if (ranges_overlap(dma->iova, NPAGE_TO_SIZE(dma->npage),
 				   start, size))
 			return dma;
@@ -300,16 +296,16 @@ static struct vfio_dma_map_entry *vfio_find_dma(struct vfio_iommu *iommu,
 }
 
 static long vfio_remove_dma_overlap(struct vfio_iommu *iommu, dma_addr_t start,
-				    size_t size, struct vfio_dma_map_entry *dma)
+				    size_t size, struct vfio_dma *dma)
 {
-	struct vfio_dma_map_entry *split;
+	struct vfio_dma *split;
 	long npage_lo, npage_hi;
 
 	/* Existing dma region is completely covered, unmap all */
 	if (start <= dma->iova &&
 	    start + size >= dma->iova + NPAGE_TO_SIZE(dma->npage)) {
 		vfio_dma_unmap(iommu, dma->iova, dma->npage, dma->prot);
-		list_del(&dma->list);
+		list_del(&dma->next);
 		npage_lo = dma->npage;
 		kfree(dma);
 		return npage_lo;
@@ -357,15 +353,15 @@ static long vfio_remove_dma_overlap(struct vfio_iommu *iommu, dma_addr_t start,
 	split->iova = start + size;
 	split->vaddr = dma->vaddr + NPAGE_TO_SIZE(npage_lo) + size;
 	split->prot = dma->prot;
-	list_add(&split->list, &iommu->dma_list);
+	list_add(&split->next, &iommu->dma_list);
 	return size >> PAGE_SHIFT;
 }
 
 static int vfio_dma_do_unmap(struct vfio_iommu *iommu,
-			     struct vfio_dma_unmap *unmap)
+			     struct vfio_iommu_x86_dma_unmap *unmap)
 {
 	long ret = 0, npage = unmap->size >> PAGE_SHIFT;
-	struct list_head *pos, *tmp;
+	struct vfio_dma *dma, *tmp;
 	uint64_t mask;
 
 	mask = ((uint64_t)1 << __ffs(iommu->domain->ops->pgsize_bitmap)) - 1;
@@ -380,10 +376,7 @@ static int vfio_dma_do_unmap(struct vfio_iommu *iommu,
 
 	mutex_lock(&iommu->lock);
 
-	list_for_each_safe(pos, tmp, &iommu->dma_list) {
-		struct vfio_dma_map_entry *dma;
-
-		dma = list_entry(pos, struct vfio_dma_map_entry, list);
+	list_for_each_entry_safe(dma, tmp, &iommu->dma_list, next) {
 		if (ranges_overlap(dma->iova, NPAGE_TO_SIZE(dma->npage),
 				   unmap->iova, unmap->size)) {
 			ret = vfio_remove_dma_overlap(iommu, unmap->iova,
@@ -398,9 +391,10 @@ static int vfio_dma_do_unmap(struct vfio_iommu *iommu,
 	return ret > 0 ? 0 : (int)ret;
 }
 
-static int vfio_dma_do_map(struct vfio_iommu *iommu, struct vfio_dma_map *map)
+static int vfio_dma_do_map(struct vfio_iommu *iommu,
+			   struct vfio_iommu_x86_dma_map *map)
 {
-	struct vfio_dma_map_entry *dma, *pdma = NULL;
+	struct vfio_dma *dma, *pdma = NULL;
 	dma_addr_t iova = map->iova;
 	unsigned long locked, lock_limit, vaddr = map->vaddr;
 	size_t size = map->size;
@@ -493,7 +487,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu, struct vfio_dma_map *map)
 			 * merged entry.  New entry covers it.
 			 */
 			if (pdma) {
-				list_del(&pdma->list);
+				list_del(&pdma->next);
 				kfree(pdma);
 			}
 			pdma = dma;
@@ -513,7 +507,7 @@ static int vfio_dma_do_map(struct vfio_iommu *iommu, struct vfio_dma_map *map)
 		dma->iova = iova;
 		dma->vaddr = vaddr;
 		dma->prot = prot;
-		list_add(&dma->list, &iommu->dma_list);
+		list_add(&dma->next, &iommu->dma_list);
 	}
 
 out_lock:
@@ -521,24 +515,125 @@ out_lock:
 	return ret;
 }
 
-static int vfio_iommu_release(struct inode *inode, struct file *filep)
+static int vfio_iommu_x86_attach_group(void *iommu_data,
+				       struct iommu_group *iommu_group)
 {
-	struct vfio_iommu *iommu = filep->private_data;
+	struct vfio_iommu *iommu = iommu_data;
+	struct vfio_group *group, *tmp;
+	int ret;
 
-	vfio_release_iommu(iommu);
+	group = kzalloc(sizeof(*group), GFP_KERNEL);
+	if (!group)
+		return -ENOMEM;
+	
+	mutex_lock(&iommu->lock);
+
+	list_for_each_entry(tmp, &iommu->group_list, next) {
+		if (tmp->iommu_group == iommu_group) {
+			mutex_unlock(&iommu->lock);
+			kfree(group);
+			return -EINVAL;
+		}
+	}
+
+	ret = iommu_attach_group(iommu->domain, iommu_group);
+	if (ret) {
+		mutex_unlock(&iommu->lock);
+		kfree(group);
+		return ret;
+	}
+
+	group->iommu_group = iommu_group;
+	list_add(&group->next, &iommu->group_list);
+
+	mutex_unlock(&iommu->lock);
+
 	return 0;
 }
 
-static long vfio_iommu_unl_ioctl(struct file *filep,
+static void vfio_iommu_x86_detach_group(void *iommu_data,
+					struct iommu_group *iommu_group)
+{
+	struct vfio_iommu *iommu = iommu_data;
+	struct vfio_group *group;
+
+	mutex_lock(&iommu->lock);
+
+	list_for_each_entry(group, &iommu->group_list, next) {
+		if (group->iommu_group == iommu_group) {
+			iommu_detach_group(iommu->domain, iommu_group);
+			list_del(&group->next);
+			kfree(group);
+			break;
+		}
+	}
+
+	mutex_unlock(&iommu->lock);
+}
+
+static void *vfio_iommu_x86_open(unsigned long arg)
+{
+	struct vfio_iommu *iommu;
+
+	if (arg != VFIO_X86_IOMMU)
+		return ERR_PTR(-EINVAL);
+
+	iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
+	if (!iommu)
+		return ERR_PTR(-ENOMEM);
+
+	/*
+	 * Wish we didn't have to know about bus_type here.
+	 */
+	iommu->domain = iommu_domain_alloc(&pci_bus_type);
+	if (!iommu->domain) {
+		kfree(iommu);
+		return ERR_PTR(-EIO);
+	}
+
+	return iommu;
+}
+
+static void vfio_iommu_x86_release(void *iommu_data)
+{
+	struct vfio_iommu *iommu = iommu_data;
+	struct vfio_group *group, *group_tmp;
+	struct vfio_dma *dma, *dma_tmp;
+
+	list_for_each_entry_safe(group, group_tmp, &iommu->group_list, next) {
+		iommu_detach_group(iommu->domain, group->iommu_group);
+		list_del(&group->next);
+		kfree(group);
+	}
+
+	list_for_each_entry_safe(dma, dma_tmp, &iommu->dma_list, next) {
+		vfio_dma_unmap(iommu, dma->iova, dma->npage, dma->prot);
+		list_del(&dma->next);
+		kfree(dma);
+	}
+
+	iommu_domain_free(iommu->domain);
+	iommu->domain = NULL;
+	kfree(iommu);
+}
+
+static long vfio_iommu_x86_ioctl(void *iommu_data,
 				 unsigned int cmd, unsigned long arg)
 {
-	struct vfio_iommu *iommu = filep->private_data;
+	struct vfio_iommu *iommu = iommu_data;
 	unsigned long minsz;
 
-	if (cmd == VFIO_IOMMU_GET_INFO) {
-		struct vfio_iommu_info info;
+	if (cmd == VFIO_CHECK_EXTENSION) {
+		switch (arg) {
+		case VFIO_X86_IOMMU:
+			return 1;
+		default:
+			return 0;
+		}
+	} else if (cmd == VFIO_IOMMU_GET_INFO) {
+		struct vfio_iommu_x86_info info;
 
-		minsz = offsetofend(struct vfio_iommu_info, iova_pgsizes);
+		minsz = offsetofend(struct vfio_iommu_x86_info, iova_pgsizes);
 
 		if (copy_from_user(&info, (void __user *)arg, minsz))
 			return -EFAULT;
@@ -548,24 +643,16 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 
 		info.flags = 0;
 
-		/*
-		 * XXX Need to define an interface in IOMMU API for this.
-		 * Currently only compatible with x86 VT-d/AMD-Vi which
-		 * do page table based mapping and have no constraints here.
-		 */
-		info.iova_start = 0;
-		info.iova_size = ~info.iova_start;
-		info.iova_entries = ~info.iova_start;
 		info.iova_pgsizes = iommu->domain->ops->pgsize_bitmap;
 
 		return copy_to_user((void __user *)arg, &info, minsz);
 
 	} else if (cmd == VFIO_IOMMU_MAP_DMA) {
-		struct vfio_dma_map map;
+		struct vfio_iommu_x86_dma_map map;
 		uint32_t mask = VFIO_DMA_MAP_FLAG_READ |
 				VFIO_DMA_MAP_FLAG_WRITE;
 
-		minsz = offsetofend(struct vfio_dma_map, size);
+		minsz = offsetofend(struct vfio_iommu_x86_dma_map, size);
 
 		if (copy_from_user(&map, (void __user *)arg, minsz))
 			return -EFAULT;
@@ -576,9 +663,9 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 		return vfio_dma_do_map(iommu, &map);
 
 	} else if (cmd == VFIO_IOMMU_UNMAP_DMA) {
-		struct vfio_dma_unmap unmap;
+		struct vfio_iommu_x86_dma_unmap unmap;
 
-		minsz = offsetofend(struct vfio_dma_unmap, size);
+		minsz = offsetofend(struct vfio_iommu_x86_dma_unmap, size);
 
 		if (copy_from_user(&unmap, (void __user *)arg, minsz))
 			return -EFAULT;
@@ -592,20 +679,33 @@ static long vfio_iommu_unl_ioctl(struct file *filep,
 	return -ENOTTY;
 }
 
-#ifdef CONFIG_COMPAT
-static long vfio_iommu_compat_ioctl(struct file *filep,
-				    unsigned int cmd, unsigned long arg)
-{
-	arg = (unsigned long)compat_ptr(arg);
-	return vfio_iommu_unl_ioctl(filep, cmd, arg);
-}
-#endif	/* CONFIG_COMPAT */
-
-const struct file_operations vfio_iommu_fops = {
+const struct vfio_iommu_driver_ops vfio_iommu_driver_ops_x86 = {
+	.name		= "vfio-iommu-x86",
 	.owner		= THIS_MODULE,
-	.release	= vfio_iommu_release,
-	.unlocked_ioctl	= vfio_iommu_unl_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl	= vfio_iommu_compat_ioctl,
-#endif
+	.open		= vfio_iommu_x86_open,
+	.release	= vfio_iommu_x86_release,
+	.ioctl		= vfio_iommu_x86_ioctl,
+	.attach_group	= vfio_iommu_x86_attach_group,
+	.detach_group	= vfio_iommu_x86_detach_group,
 };
+
+static int __init vfio_iommu_x86_init(void)
+{
+	if (!iommu_present(&pci_bus_type))
+		return -ENODEV;
+
+	return vfio_register_iommu_driver(&vfio_iommu_driver_ops_x86);
+}
+
+static void __exit vfio_iommu_x86_cleanup(void)
+{
+	vfio_unregister_iommu_driver(&vfio_iommu_driver_ops_x86);
+}
+
+module_init(vfio_iommu_x86_init);
+module_exit(vfio_iommu_x86_cleanup);
+
+MODULE_VERSION(DRIVER_VERSION);
+MODULE_LICENSE("GPL v2");
+MODULE_AUTHOR(DRIVER_AUTHOR);
+MODULE_DESCRIPTION(DRIVER_DESC);

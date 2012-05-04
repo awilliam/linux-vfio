@@ -426,7 +426,8 @@ static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 	 * we need to request the region and the barmap tracks that.
 	 */
 	if (!vdev->barmap[index]) {
-		ret = pci_request_selected_regions(pdev, 1 << index, "vfio");
+		ret = pci_request_selected_regions(pdev,
+						   1 << index, "vfio-pci");
 		if (ret)
 			return ret;
 
@@ -444,6 +445,7 @@ static int vfio_pci_mmap(void *device_data, struct vm_area_struct *vma)
 }
 
 static const struct vfio_device_ops vfio_pci_ops = {
+	.name		= "vfio-pci",
 	.open		= vfio_pci_open,
 	.release	= vfio_pci_release,
 	.ioctl		= vfio_pci_ioctl,
@@ -478,7 +480,7 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	mutex_init(&vdev->igate);
 	atomic_set(&vdev->refcnt, 0);
 
-	ret = vfio_add_group_dev(group, &pdev->dev, &vfio_pci_ops, vdev);
+	ret = vfio_add_group_dev(&pdev->dev, &vfio_pci_ops, vdev);
 	if (ret) {
 		iommu_group_put(group);
 		kfree(vdev);
@@ -500,7 +502,7 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 }
 
 static struct pci_driver vfio_pci_driver = {
-	.name		= "vfio",
+	.name		= "vfio-pci",
 	.id_table	= NULL, /* only dynamic ids */
 	.probe		= vfio_pci_probe,
 	.remove		= vfio_pci_remove,

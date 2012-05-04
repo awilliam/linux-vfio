@@ -24,7 +24,6 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/pci.h> /* XXX for pci_bus_type hack, still need to pass bus */
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
@@ -36,24 +35,22 @@
 #define DRIVER_DESC	"VFIO - User Level meta-driver"
 
 static struct vfio {
-	struct class		*class;
-	struct list_head	iommu_drivers_list;
-	struct mutex		iommu_drivers_lock;
-	struct list_head	group_list;
-	struct idr		group_idr;
-	struct mutex		group_lock;
-	dev_t			group_devt;
-	struct cdev		group_cdev;
-	struct device		*dev;
-	dev_t			devt;
-	struct cdev		cdev;
-	wait_queue_head_t	release_q;
+	struct class			*class;
+	struct list_head		iommu_drivers_list;
+	struct mutex			iommu_drivers_lock;
+	struct list_head		group_list;
+	struct idr			group_idr;
+	struct mutex			group_lock;
+	struct cdev			group_cdev;
+	struct device			*dev;
+	dev_t				devt;
+	struct cdev			cdev;
+	wait_queue_head_t		release_q;
 } vfio;
 
 struct vfio_iommu_driver {
-	struct vfio_iommu_driver_ops	*ops;
+	const struct vfio_iommu_driver_ops	*ops;
 	struct list_head		vfio_next;
-	struct module			*module;
 };
 
 struct vfio_container {
@@ -65,7 +62,7 @@ struct vfio_container {
 
 struct vfio_group {
 	struct kref			kref;
-	dev_t				devt;
+	int				minor;
 	atomic_t			inuse_devices;
 	struct iommu_group		*iommu_group;
 	struct vfio_container		*container;
@@ -89,8 +86,7 @@ struct vfio_device {
 /**
  * IOMMU driver registration
  */
-int vfio_register_iommu_driver(struct module *module,
-			       struct vfio_iommu_driver_ops *ops)
+int vfio_register_iommu_driver(const struct vfio_iommu_driver_ops *ops)
 {
 	struct vfio_iommu_driver *driver, *tmp;
 
@@ -103,18 +99,13 @@ int vfio_register_iommu_driver(struct module *module,
 		return -ENOMEM;
 	}
 
-	/*
-	 * Save the module so we can acquire a reference to it when we
-	 * make use of this driver and prevent the driver from unloading.
-	 */
-	driver->module = module;
 	driver->ops = ops;
 
 	mutex_lock(&vfio.iommu_drivers_lock);
 
 	/* Check for duplicates */
 	list_for_each_entry(tmp, &vfio.iommu_drivers_list, vfio_next) {
-		if (tmp->module == module && tmp->ops == ops) {
+		if (tmp->ops == ops) {
 			mutex_unlock(&vfio.iommu_drivers_lock);
 			kfree(driver);
 			module_put(THIS_MODULE);
@@ -130,22 +121,23 @@ int vfio_register_iommu_driver(struct module *module,
 }
 EXPORT_SYMBOL_GPL(vfio_register_iommu_driver);
 
-void vfio_unregister_iommu_driver(struct module *module,
-				  struct vfio_iommu_driver_ops *ops)
+void vfio_unregister_iommu_driver(const struct vfio_iommu_driver_ops *ops)
 {
 	struct vfio_iommu_driver *driver;
 
 	mutex_lock(&vfio.iommu_drivers_lock);
 	list_for_each_entry(driver, &vfio.iommu_drivers_list, vfio_next) {
-		if (driver->module == module && driver->ops == ops) {
+		if (driver->ops == ops) {
 			list_del(&driver->vfio_next);
+			mutex_unlock(&vfio.iommu_drivers_lock);
 			kfree(driver);
-			break;
+			module_put(THIS_MODULE);
+			return;
 		}
 	}
 	mutex_unlock(&vfio.iommu_drivers_lock);
-	module_put(THIS_MODULE);
 }
+EXPORT_SYMBOL_GPL(vfio_unregister_iommu_driver);
 
 /**
  * Group minor allocation - called with vfio.group_lock held
@@ -158,7 +150,8 @@ again:
 	if (unlikely(idr_pre_get(&vfio.group_idr, GFP_KERNEL) == 0))
 		return -ENOMEM;
 
-	ret = idr_get_new(&vfio.group_idr, group, &minor);
+	/* index 0 is used by /dev/vfio/vfio */
+	ret = idr_get_new_above(&vfio.group_idr, group, 1, &minor);
 	if (ret == -EAGAIN)
 		goto again;
 	if (ret || minor > MINORMASK) {
@@ -232,8 +225,6 @@ static struct vfio_group *vfio_create_group(struct iommu_group *iommu_group)
 		return ERR_PTR(minor);
 	}
 
-	group->devt = MKDEV(MAJOR(vfio.devt), minor);
-
 	/* Did we race creating this group? */
 	list_for_each_entry(tmp, &vfio.group_list, vfio_next) {
 		if (tmp->iommu_group == iommu_group) {
@@ -245,7 +236,7 @@ static struct vfio_group *vfio_create_group(struct iommu_group *iommu_group)
 		}
 	}
 
-	dev = device_create(vfio.class, NULL, group->devt,
+	dev = device_create(vfio.class, NULL, MKDEV(MAJOR(vfio.devt), minor),
 			    group, "%d", iommu_group_id(iommu_group));
 	if (IS_ERR(dev)) {
 		vfio_free_group_minor(minor);
@@ -254,6 +245,7 @@ static struct vfio_group *vfio_create_group(struct iommu_group *iommu_group)
 		return (struct vfio_group *)dev; /* ERR_PTR */
 	}
 
+	group->minor = minor;
 	group->dev = dev;
 
 	list_add(&group->vfio_next, &vfio.group_list);
@@ -274,9 +266,9 @@ static void vfio_group_release(struct kref *kref)
 
 	group->nb.notifier_call = vfio_iommu_group_dummy_notifier;
 
-	device_destroy(vfio.class, group->devt);
+	device_destroy(vfio.class, MKDEV(MAJOR(vfio.devt), group->minor));
 	list_del(&group->vfio_next);
-	vfio_free_group_minor(MINOR(group->devt));
+	vfio_free_group_minor(group->minor);
 
 	mutex_unlock(&vfio.group_lock);
 
@@ -654,7 +646,7 @@ void *vfio_del_group_dev(struct device *dev)
 	vfio_device_put(device);
 
 	/* TODO send a signal to encourage this to be released */
-	wait_event(vfio.release_q, vfio_dev_present(dev));
+	wait_event(vfio.release_q, !vfio_dev_present(dev));
 
 	iommu_group_put(iommu_group);
 	module_put(THIS_MODULE);
@@ -685,13 +677,13 @@ static long vfio_ioctl_check_extension(struct vfio_container *container,
 			mutex_lock(&vfio.iommu_drivers_lock);
 			list_for_each_entry(driver, &vfio.iommu_drivers_list,
 					    vfio_next) {
-				if (!try_module_get(driver->module))
+				if (!try_module_get(driver->ops->owner))
 					continue;
 
 				ret = driver->ops->ioctl(NULL,
 							 VFIO_CHECK_EXTENSION,
 							 arg);
-				module_put(driver->module);
+				module_put(driver->ops->owner);
 				if (ret > 0)
 					break;
 			}
@@ -744,7 +736,7 @@ static long vfio_ioctl_set_iommu(struct vfio_container *container,
 
 	mutex_lock(&vfio.iommu_drivers_lock);
 	list_for_each_entry(driver, &vfio.iommu_drivers_list, vfio_next) {
-		if (!try_module_get(driver->module))
+		if (!try_module_get(driver->ops->owner))
 			continue;
 
 		/*
@@ -771,7 +763,7 @@ static long vfio_ioctl_set_iommu(struct vfio_container *container,
 
 			goto found;
 		}
-		module_put(driver->module);
+		module_put(driver->ops->owner);
 	}
 
 	mutex_unlock(&vfio.iommu_drivers_lock);
@@ -943,7 +935,7 @@ static int vfio_group_unset_container(struct vfio_group *group)
 	/* Detaching the last group deprivileges a container, remove iommu */
 	if (driver && list_empty(&container->group_list)) {
 		driver->ops->release(container->iommu_data);
-		module_put(driver->module);
+		module_put(driver->ops->owner);
 		container->iommu_driver = NULL;
 		container->iommu_data = NULL;
 	}
@@ -1282,8 +1274,7 @@ static int __init vfio_init(void)
 
 	vfio.class->devnode = vfio_devnode;
 
-	/* /dev/vfio/vfio */
-	ret = alloc_chrdev_region(&vfio.devt, 0, 1, "vfio");
+	ret = alloc_chrdev_region(&vfio.devt, 0, MINORMASK, "vfio");
 	if (ret)
 		goto err_base_chrdev;
 
@@ -1299,28 +1290,29 @@ static int __init vfio_init(void)
 	}
 
 	/* /dev/vfio/$GROUP */
-	ret = alloc_chrdev_region(&vfio.group_devt, 0, MINORMASK,
-				  "vfio-groups");
-	if (ret)
-		goto err_groups_chrdev;
-
 	cdev_init(&vfio.group_cdev, &vfio_group_fops);
-	ret = cdev_add(&vfio.group_cdev, vfio.group_devt, MINORMASK);
+	ret = cdev_add(&vfio.group_cdev,
+		       MKDEV(MAJOR(vfio.devt), 1), MINORMASK - 1);
 	if (ret)
 		goto err_groups_cdev;
 
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 
+	/*
+	 * Attempt to load known iommu-drivers.  This gives us a working
+	 * environment without the user needing to explicitly load iommu
+	 * drivers.
+	 */
+	request_module_nowait("vfio_iommu_x86");
+
 	return 0;
 
 err_groups_cdev:
-	unregister_chrdev_region(vfio.group_devt, MINORMASK);
-err_groups_chrdev:
-	device_destroy(vfio.class, vfio.group_devt);
+	device_destroy(vfio.class, vfio.devt);
 err_base_dev:
 	cdev_del(&vfio.cdev);
 err_base_cdev:
-	unregister_chrdev_region(vfio.devt, 1);
+	unregister_chrdev_region(vfio.devt, MINORMASK);
 err_base_chrdev:
 	class_destroy(vfio.class);
 	vfio.class = NULL;
@@ -1334,10 +1326,9 @@ static void __exit vfio_cleanup(void)
 
 	idr_destroy(&vfio.group_idr);
 	cdev_del(&vfio.group_cdev);
-	unregister_chrdev_region(vfio.group_devt, MINORMASK);
 	device_destroy(vfio.class, vfio.devt);
 	cdev_del(&vfio.cdev);
-	unregister_chrdev_region(vfio.devt, 1);
+	unregister_chrdev_region(vfio.devt, MINORMASK);
 	class_destroy(vfio.class);
 	vfio.class = NULL;
 }
