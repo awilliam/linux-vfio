@@ -575,12 +575,17 @@ static void *vfio_iommu_x86_open(unsigned long arg)
 {
 	struct vfio_iommu *iommu;
 
+printk("vfio_iommu_x86_open: %d\n", arg);
 	if (arg != VFIO_X86_IOMMU)
 		return ERR_PTR(-EINVAL);
 
 	iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
 	if (!iommu)
 		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&iommu->group_list);
+	INIT_LIST_HEAD(&iommu->dma_list);
+	mutex_init(&iommu->lock);
 
 	/*
 	 * Wish we didn't have to know about bus_type here.
@@ -624,6 +629,7 @@ static long vfio_iommu_x86_ioctl(void *iommu_data,
 	unsigned long minsz;
 
 	if (cmd == VFIO_CHECK_EXTENSION) {
+printk("vfio_iommu_x86_ioctl: CHECK_EXTENSION %d\n", arg);
 		switch (arg) {
 		case VFIO_X86_IOMMU:
 			return 1;

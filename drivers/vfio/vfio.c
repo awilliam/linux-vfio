@@ -276,6 +276,7 @@ static void vfio_group_release(struct kref *kref)
 
 	kfree(group);
 
+printk("%s triggering wakeup\n", __func__);
 	wake_up(&vfio.release_q);
 }
 
@@ -399,6 +400,7 @@ static void vfio_device_release(struct kref *kref)
 
 	kfree(device);
 
+printk("%s triggering wakeup\n", __func__);
 	wake_up(&vfio.release_q);
 }
 
@@ -664,6 +666,7 @@ static long vfio_ioctl_check_extension(struct vfio_container *container,
 	struct vfio_iommu_driver *driver = container->iommu_driver;
 	long ret = 0;
 
+printk("vfio_ioctl_check_extension: %d\n", arg);
 	switch (arg) {
 		/* No base extensions yet */
 	default:
@@ -693,6 +696,7 @@ static long vfio_ioctl_check_extension(struct vfio_container *container,
 						 VFIO_CHECK_EXTENSION, arg);
 	}
 
+printk("check_extension = %d\n", ret);
 	return ret;
 }
 
@@ -752,6 +756,10 @@ static long vfio_ioctl_set_iommu(struct vfio_container *container,
 			mutex_unlock(&vfio.iommu_drivers_lock);
 
 			data = driver->ops->open(arg);
+			if (IS_ERR(data)) {
+				ret = PTR_ERR(data);
+				goto found;
+			}
 
 			ret = __vfio_container_attach_groups(container,
 							     driver, data);
@@ -838,6 +846,7 @@ static bool vfio_container_empty(struct vfio_container *container)
 	empty = list_empty(&container->group_list);
 	mutex_unlock(&container->group_lock);
 
+printk("%s = %d\n", __func__, empty);
 	return empty;
 }
 
@@ -915,11 +924,12 @@ static int vfio_group_unset_container(struct vfio_group *group)
 	struct vfio_iommu_driver *driver;
 	struct vfio_iommu_data *data;
 
+printk("%s\n", __func__);
 	container = group->container;
-	if (!container)
+	if (WARN_ON(!container))
 		return -EINVAL;
 
-	if (atomic_read(&group->inuse_devices))
+	if (WARN_ON(atomic_read(&group->inuse_devices)))
 		return -EBUSY;
 
 	mutex_lock(&container->group_lock);
@@ -930,10 +940,12 @@ static int vfio_group_unset_container(struct vfio_group *group)
 	if (driver)
 		driver->ops->detach_group(data, group->iommu_group);
 
+	group->container = NULL;
 	list_del(&group->container_next);
 
 	/* Detaching the last group deprivileges a container, remove iommu */
 	if (driver && list_empty(&container->group_list)) {
+printk("implicit iommu unset\n");
 		driver->ops->release(container->iommu_data);
 		module_put(driver->ops->owner);
 		container->iommu_driver = NULL;
@@ -942,6 +954,7 @@ static int vfio_group_unset_container(struct vfio_group *group)
 
 	mutex_unlock(&container->group_lock);
 
+printk("%s triggering wakeup\n", __func__);
 	wake_up(&vfio.release_q);
 
 	return 0;
@@ -979,6 +992,7 @@ static int vfio_group_set_container(struct vfio_group *group, int container_fd)
 			goto unlock_out;
 	}
 
+	group->container = container;
 	list_add(&group->container_next, &container->group_list);
 
 unlock_out:
@@ -1020,7 +1034,7 @@ static int vfio_group_get_device_fd(struct vfio_group *group, char *buf)
 	struct file *filep;
 	int ret = -ENODEV;
 
-	if (!(group->container || group->container->iommu_driver))
+	if (!group->container || !group->container->iommu_driver)
 		return -EINVAL;
 
 	mutex_lock(&group->device_lock);
@@ -1159,7 +1173,7 @@ static int vfio_group_fops_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_group *group = filep->private_data;
 
-	wait_event(vfio.release_q, vfio_group_unset_container(group) != -EBUSY);
+	//wait_event(vfio.release_q, vfio_group_unset_container(group) != -EBUSY);
 
 	filep->private_data = NULL;
 
@@ -1184,11 +1198,13 @@ static const struct file_operations vfio_group_fops = {
 static int vfio_device_fops_release(struct inode *inode, struct file *filep)
 {
 	struct vfio_device *device = filep->private_data;
+printk("%s\n", __func__);
 
 	device->ops->release(device->device_data);
 
 	atomic_dec(&device->group->inuse_devices);
 
+printk("%s triggering wakeup\n", __func__);
 	wake_up(&vfio.release_q);
 
 	return 0;

@@ -478,6 +478,7 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	vdev->pdev = pdev;
 	vdev->irq_type = VFIO_PCI_NUM_IRQS;
 	mutex_init(&vdev->igate);
+	spin_lock_init(&vdev->irqlock);
 	atomic_set(&vdev->refcnt, 0);
 
 	ret = vfio_add_group_dev(&pdev->dev, &vfio_pci_ops, vdev);
