@@ -228,6 +228,8 @@ static long vfio_pci_ioctl(void *device_data,
 
 			flags = pci_resource_flags(pdev, info.index);
 
+			info.flags |= VFIO_REGION_INFO_FLAG_READ;
+
 			/* Report the actual ROM size instead of the BAR size,
 			 * this gives the user an easy way to determine whether
 			 * there's anything here w/o trying to read it. */
@@ -238,12 +240,14 @@ static long vfio_pci_ioctl(void *device_data,
 				io = pci_map_rom(pdev, &size);
 				info.size = io ? size : 0;
 				pci_unmap_rom(pdev, io);
-				info.flags |= VFIO_REGION_INFO_FLAG_RO;
 			} else if (flags & IORESOURCE_MEM) {
 				info.size = pci_resource_len(pdev, info.index);
-				info.flags |= VFIO_REGION_INFO_FLAG_MMAP;
-			} else
+				info.flags |= (VFIO_REGION_INFO_FLAG_WRITE |
+					       VFIO_REGION_INFO_FLAG_MMAP);
+			} else {
 				info.size = pci_resource_len(pdev, info.index);
+				info.flags |= VFIO_REGION_INFO_FLAG_WRITE;
+			}
 		} else
 			info.size = 0;
 

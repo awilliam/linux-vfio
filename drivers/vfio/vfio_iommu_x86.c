@@ -575,7 +575,6 @@ static void *vfio_iommu_x86_open(unsigned long arg)
 {
 	struct vfio_iommu *iommu;
 
-printk("vfio_iommu_x86_open: %d\n", arg);
 	if (arg != VFIO_X86_IOMMU)
 		return ERR_PTR(-EINVAL);
 
@@ -629,7 +628,6 @@ static long vfio_iommu_x86_ioctl(void *iommu_data,
 	unsigned long minsz;
 
 	if (cmd == VFIO_CHECK_EXTENSION) {
-printk("vfio_iommu_x86_ioctl: CHECK_EXTENSION %d\n", arg);
 		switch (arg) {
 		case VFIO_X86_IOMMU:
 			return 1;

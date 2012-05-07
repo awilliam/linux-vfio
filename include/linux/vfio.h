@@ -289,8 +289,9 @@ struct vfio_device_info {
 struct vfio_region_info {
 	__u32	argsz;
 	__u32	flags;
-#define VFIO_REGION_INFO_FLAG_MMAP	(1 << 0) /* Region supports mmap */
-#define VFIO_REGION_INFO_FLAG_RO	(1 << 1) /* Region is read-only */
+#define VFIO_REGION_INFO_FLAG_READ	(1 << 0) /* Region supports read */
+#define VFIO_REGION_INFO_FLAG_WRITE	(1 << 1) /* Region supports write */
+#define VFIO_REGION_INFO_FLAG_MMAP	(1 << 2) /* Region supports mmap */
 	__u32	index;		/* Region index */
 	__u32	resv;		/* Reserved for alignment */
 	__u64	size;		/* Region size (bytes) */
