@@ -26,9 +26,15 @@
 #include <linux/vfio.h>
 #include <linux/workqueue.h>
 
-#define DRIVER_VERSION  "0.1"
+#define DRIVER_VERSION  "0.2"
 #define DRIVER_AUTHOR   "Alex Williamson <alex.williamson@redhat.com>"
 #define DRIVER_DESC     "x86 IOMMU driver for VFIO"
+
+static bool allow_unsafe_interrupts;
+module_param_named(allow_unsafe_interrupts,
+		   allow_unsafe_interrupts, bool, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(allow_unsafe_interrupts, "Enable VFIO IOMMU support for on "
+		 "platforms without interrupt remapping support.");
 
 struct vfio_iommu {
 	struct iommu_domain	*domain;
@@ -536,6 +542,12 @@ static int vfio_iommu_x86_attach_group(void *iommu_data,
 		}
 	}
 
+	/*
+	 * TODO: Domain have capabilities that might change as we add
+	 * groups (see iommu->cache, currently never set).  Check for
+	 * them and potentially disallow groups to be attached when it
+	 * would change capabilities (ugh).
+	 */
 	ret = iommu_attach_group(iommu->domain, iommu_group);
 	if (ret) {
 		mutex_unlock(&iommu->lock);
@@ -593,6 +605,22 @@ static void *vfio_iommu_x86_open(unsigned long arg)
 	if (!iommu->domain) {
 		kfree(iommu);
 		return ERR_PTR(-EIO);
+	}
+
+	/*
+	 * Wish we could specify required capabilities rather than create
+	 * a domain, see what comes out and hope it doesn't change along
+	 * the way.  Fortunately we know interrupt remapping is global for
+	 * our iommus.
+	 */
+	if (!allow_unsafe_interrupts &&
+	    !iommu_domain_has_cap(iommu->domain, IOMMU_CAP_INTR_REMAP)) {
+		printk(KERN_WARNING "%s: No interrupt remapping support.  Use "
+		       "the module param \"allow_unsafe_interrupts\" to enable "
+		       "VFIO IOMMU support on this platform\n", __func__);
+		iommu_domain_free(iommu->domain);
+		kfree(iommu);
+		return ERR_PTR(-EPERM);
 	}
 
 	return iommu;
