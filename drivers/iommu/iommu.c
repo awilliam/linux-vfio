@@ -30,7 +30,7 @@
 #include <linux/notifier.h>
 
 static struct kset *iommu_group_kset;
-static struct idr iommu_group_idr;
+static struct ida iommu_group_ida;
 static struct mutex iommu_group_mutex;
 
 struct iommu_group {
@@ -89,7 +89,7 @@ static void iommu_group_release(struct kobject *kobj)
 	struct iommu_group *group = to_iommu_group(kobj);
 
 	mutex_lock(&iommu_group_mutex);
-	idr_remove(&iommu_group_idr, group->id);
+	ida_remove(&iommu_group_ida, group->id);
 	mutex_unlock(&iommu_group_mutex);
 
 	kfree(group);
@@ -133,13 +133,13 @@ struct iommu_group *iommu_group_alloc(void)
 	mutex_lock(&iommu_group_mutex);
 
 again:
-	if (unlikely(0 == idr_pre_get(&iommu_group_idr, GFP_KERNEL))) {
+	if (unlikely(0 == ida_pre_get(&iommu_group_ida, GFP_KERNEL))) {
 		kfree(group);
 		mutex_unlock(&iommu_group_mutex);
 		return ERR_PTR(-ENOMEM);
 	}
 
-	if (-EAGAIN == idr_get_new(&iommu_group_idr, group, &group->id))
+	if (-EAGAIN == ida_get_new(&iommu_group_ida, &group->id))
 		goto again;
 
 	mutex_unlock(&iommu_group_mutex);
@@ -148,7 +148,7 @@ again:
 				   NULL, "%d", group->id);
 	if (ret) {
 		mutex_lock(&iommu_group_mutex);
-		idr_remove(&iommu_group_idr, group->id);
+		ida_remove(&iommu_group_ida, group->id);
 		mutex_unlock(&iommu_group_mutex);
 		kfree(group);
 		return ERR_PTR(ret);
@@ -720,7 +720,7 @@ static int __init iommu_init(void)
 {
 	iommu_group_kset = kset_create_and_add("iommu_groups",
 					       NULL, kernel_kobj);
-	idr_init(&iommu_group_idr);
+	ida_init(&iommu_group_ida);
 	mutex_init(&iommu_group_mutex);
 
 	BUG_ON(!iommu_group_kset);
