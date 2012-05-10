@@ -286,9 +286,6 @@ static int iommu_init_device(struct device *dev)
 	} else
 		dma_pdev = pdev;
 
-        if (!pdev->is_virtfn && iommu_group_mf)
-                dma_pdev = pci_get_slot(dma_pdev->bus, 0);
-
 	dma_pdev = pci_dma_quirk(dma_pdev);
 	dma_pdev = pci_acs_enabled(dma_pdev);
 

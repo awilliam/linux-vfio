@@ -3129,5 +3129,14 @@ struct pci_dev *pci_dma_quirk(struct pci_dev *dev)
 				       PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
 	}
 
+	/*
+	 * XXX do this generically so we can combine the above into
+	 * a whitelist/blacklist.
+	 */
+	if (!dev->is_virtfn && PCI_FUNC(dev->devfn) && iommu_group_mf
+	    dev->hdr_type == PCI_HEADER_TYPE_NORMAL)
+		dma_dev = pci_get_slot(dev->bus,
+				       PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
+
 	return dma_dev;
 }

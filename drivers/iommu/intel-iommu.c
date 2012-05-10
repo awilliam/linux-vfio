@@ -4108,9 +4108,6 @@ static int intel_iommu_add_device(struct device *dev)
 			dma_pdev = bridge;
 	}
 
-	if (!bridge && !pdev->is_virtfn && iommu_group_mf)
-		dma_pdev = pci_get_slot(dma_pdev->bus, 0);
-
 	dma_pdev = pci_dma_quirk(dma_pdev);
 	dma_pdev = pci_acs_enabled(dma_pdev);
 
