@@ -1513,9 +1513,11 @@ enum pci_fixup_pass {
 
 #ifdef CONFIG_PCI_QUIRKS
 void pci_fixup_device(enum pci_fixup_pass pass, struct pci_dev *dev);
+struct pci_dev *pci_dma_quirk(struct pci_dev *dev);
 #else
 static inline void pci_fixup_device(enum pci_fixup_pass pass,
 				    struct pci_dev *dev) {}
+struct pci_dev *pci_dma_quirk(struct pci_dev *dev) { return dev }
 #endif
 
 void __iomem *pcim_iomap(struct pci_dev *pdev, int bar, unsigned long maxlen);
@@ -1618,6 +1620,7 @@ static inline bool pci_is_pcie(struct pci_dev *dev)
 }
 
 void pci_request_acs(void);
+struct pci_dev *pci_acs_enabled(struct pci_dev *dev);
 
 
 #define PCI_VPD_LRDT			0x80	/* Large Resource Data Type */

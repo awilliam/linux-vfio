@@ -2352,6 +2352,49 @@ void pci_enable_acs(struct pci_dev *dev)
 	pci_write_config_word(dev, pos + PCI_ACS_CTRL, ctrl);
 }
 
+#define PCI_EXT_CAP_ACS_ENABLED		(PCI_ACS_SV | PCI_ACS_RR | \
+					 PCI_ACS_CR | PCI_ACS_UF)
+
+/**
+ * pci_acs_enabled - test ACS support in downstream chain
+ * @dev: starting PCI device
+ *
+ * Returns the furthest downstream device with an unbroken ACS chain.  If
+ * ACS is enabled throughout the chain, the returned device is the same as
+ * the one passed in.
+ */
+struct pci_dev *pci_acs_enabled(struct pci_dev *dev)
+{
+	struct pci_dev *acs_dev;
+	int pos;
+	u16 ctrl;
+
+	if (!pci_is_root_bus(dev->bus))
+		acs_dev = pci_acs_enabled(dev->bus->self);
+	else
+		return dev;
+
+	/* If the chain is already broken, pass on the device */
+	if (acs_dev != dev->bus->self)
+		return acs_dev;
+
+	if (!pci_is_pcie(dev) || (dev->class >> 8) != PCI_CLASS_BRIDGE_PCI)
+		return dev;
+
+	if (dev->pcie_type != PCI_EXP_TYPE_DOWNSTREAM)
+		return dev;
+	
+	pos = pci_find_ext_capability(dev, PCI_EXT_CAP_ID_ACS);
+	if (!pos)
+		return acs_dev;
+
+	pci_read_config_word(dev, pos + PCI_ACS_CTRL, &ctrl);
+	if ((ctrl & PCI_EXT_CAP_ACS_ENABLED) != PCI_EXT_CAP_ACS_ENABLED)
+		return acs_dev;
+
+	return dev;
+}
+
 /**
  * pci_swizzle_interrupt_pin - swizzle INTx for device behind bridge
  * @dev: the PCI device
