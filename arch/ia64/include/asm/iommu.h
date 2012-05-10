@@ -12,13 +12,11 @@ extern int force_iommu, no_iommu;
 extern int iommu_pass_through;
 extern int iommu_detected;
 extern int iommu_group_mf;
-extern int iommu_group_unsafe_msi;
 #else
 #define iommu_pass_through	(0)
 #define no_iommu		(1)
 #define iommu_detected		(0)
 #define iommu_group_mf		(0)
-#define iommu_group_unsafe_msi	(0)
 #endif
 extern void iommu_dma_init(void);
 extern void machvec_init(const char *name);

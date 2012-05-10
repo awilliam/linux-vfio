@@ -54,16 +54,6 @@ int iommu_pass_through __read_mostly;
  */
 int iommu_group_mf __read_mostly;
 
-/*
- * For the iommu_device_group interface, we not only need to be concerned
- * with DMA isolation between devices, but also DMA isolation that could
- * affect the platform, including MSI isolation.  If a platform is
- * susceptible to malicious DMA writes triggering MSI interrupts, the
- * IOMMU driver can't reasonably group devices.  This allows the iommu
- * driver to ignore MSI isolation when creating groups.
- */
-int iommu_group_unsafe_msi __read_mostly;
-
 extern struct iommu_table_entry __iommu_table[], __iommu_table_end[];
 
 /* Dummy device used for NULL arguments (normally ISA). */
@@ -191,8 +181,6 @@ static __init int iommu_setup(char *p)
 			iommu_pass_through = 1;
 		if (!strncmp(p, "group_mf", 8))
 			iommu_group_mf = 1;
-		if (!strncmp(p, "group_unsafe_msi", 16))
-			iommu_group_unsafe_msi = 1;
 
 		gart_parse_options(p);
 

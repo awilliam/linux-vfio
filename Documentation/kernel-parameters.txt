@@ -1101,12 +1101,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 		nomerge
 		forcesac
 		soft
-		pt			[x86, IA-64]
-		group_mf		[x86, IA-64]
-			Group multifunction devices together in IOMMU API.
-		group_unsafe_msi	[x86, IA-64]
-			Allow grouping of devices even when the platfom
-			does not provide MSI isolation in IOMMU API.
+		pt		[x86, IA-64]
+		group_mf	[x86, IA-64]
+
 
 	io7=		[HW] IO7 for Marvel based alpha systems
 			See comment before marvel_specify_io7 in
