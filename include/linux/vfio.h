@@ -145,59 +145,10 @@ extern void vfio_unregister_iommu_driver(const struct vfio_iommu_driver_ops *ops
  */
 #define VFIO_SET_IOMMU			_IO(VFIO_TYPE, VFIO_BASE + 2)
 
-/* -------- API for x86 VFIO IOMMU -------- */
-
-/**
- * VFIO_IOMMU_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 3, struct vfio_iommu_info)
- *
- * Retrieve information about the IOMMU object. Fills in provided
- * struct vfio_iommu_info. Caller sets argsz.
- */
-struct vfio_iommu_x86_info {
-	__u32	argsz;
-	__u32	flags;
-	__u64	iova_pgsizes;		/* Bitmap of supported page sizes */
-};
-
-#define VFIO_IOMMU_GET_INFO _IO(VFIO_TYPE, VFIO_BASE + 3)
-
-/**
- * * VFIO_IOMMU_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 4, struct vfio_dma_map)
- * *
- * * Map process virtual addresses to IO virtual addresses using the
- * * provided struct vfio_dma_map. Caller sets argsz. READ &/ WRITE required.
- * */
-struct vfio_iommu_x86_dma_map {
-	__u32	argsz;
-	__u32 	flags;
-#define VFIO_DMA_MAP_FLAG_READ (1 << 0)		/* readable from device */
-#define VFIO_DMA_MAP_FLAG_WRITE (1 << 1)	/* writable from device */
-	__u64	 vaddr;				/* Process virtual address */
-	__u64	 iova;				/* IO virtual address */
-	__u64	 size;				/* Size of mapping (bytes) */
-};
-
-#define VFIO_IOMMU_MAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 4)
-
-/**
- * * VFIO_IOMMU_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 5, struct vfio_dma_unmap)
- * *
- * * Unmap IO virtual addresses using the provided struct vfio_dma_unmap.
- * * Caller sets argsz.
- * */
-struct vfio_iommu_x86_dma_unmap {
-	__u32	argsz;
-	__u32	flags;
-	__u64	iova;				/* IO virtual address */
-	__u64	size;				/* Size of mapping (bytes) */
-};
-
-#define VFIO_IOMMU_UNMAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 5)
-
 /* -------- IOCTLs for GROUP file descriptors (/dev/vfio/$GROUP) -------- */
 
 /**
- * VFIO_GROUP_GET_STATUS - _IOR(VFIO_TYPE, VFIO_BASE + 7,
+ * VFIO_GROUP_GET_STATUS - _IOR(VFIO_TYPE, VFIO_BASE + 3,
  * 						struct vfio_group_status)
  *
  * Retrieve information about the group.  Fills in provided
@@ -211,10 +162,10 @@ struct vfio_group_status {
 #define VFIO_GROUP_FLAGS_VIABLE		(1 << 0)
 #define VFIO_GROUP_FLAGS_CONTAINER_SET	(1 << 1)
 };
-#define VFIO_GROUP_GET_STATUS		_IO(VFIO_TYPE, VFIO_BASE + 7)
+#define VFIO_GROUP_GET_STATUS		_IO(VFIO_TYPE, VFIO_BASE + 3)
 
 /**
- * VFIO_GROUP_SET_CONTAINER - _IOW(VFIO_TYPE, VFIO_BASE + 8, __s32)
+ * VFIO_GROUP_SET_CONTAINER - _IOW(VFIO_TYPE, VFIO_BASE + 4, __s32)
  *
  * Set the container for the VFIO group to the open VFIO file
  * descriptor provided.  Groups may only belong to a single
@@ -225,10 +176,10 @@ struct vfio_group_status {
  * Return: 0 on success, -errno on failure.
  * Availability: Always
  */
-#define VFIO_GROUP_SET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 8)
+#define VFIO_GROUP_SET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 4)
 
 /**
- * VFIO_GROUP_UNSET_CONTAINER - _IO(VFIO_TYPE, VFIO_BASE + 9)
+ * VFIO_GROUP_UNSET_CONTAINER - _IO(VFIO_TYPE, VFIO_BASE + 5)
  *
  * Remove the group from the attached container.  This is the
  * opposite of the SET_CONTAINER call and returns the group to
@@ -240,10 +191,10 @@ struct vfio_group_status {
  * Return: 0 on success, -errno on failure.
  * Availability: When attached to container
  */
-#define VFIO_GROUP_UNSET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 9)
+#define VFIO_GROUP_UNSET_CONTAINER	_IO(VFIO_TYPE, VFIO_BASE + 5)
 
 /**
- * VFIO_GROUP_GET_DEVICE_FD - _IOW(VFIO_TYPE, VFIO_BASE + 10, char)
+ * VFIO_GROUP_GET_DEVICE_FD - _IOW(VFIO_TYPE, VFIO_BASE + 6, char)
  *
  * Return a new file descriptor for the device object described by
  * the provided string.  The string should match a device listed in
@@ -252,12 +203,12 @@ struct vfio_group_status {
  * Return: new file descriptor on success, -errno on failure.
  * Availability: When attached to container
  */
-#define VFIO_GROUP_GET_DEVICE_FD	_IO(VFIO_TYPE, VFIO_BASE + 10)
+#define VFIO_GROUP_GET_DEVICE_FD	_IO(VFIO_TYPE, VFIO_BASE + 6)
 
 /* --------------- IOCTLs for DEVICE file descriptors --------------- */
 
 /**
- * VFIO_DEVICE_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 11,
+ * VFIO_DEVICE_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 7,
  * 						struct vfio_device_info)
  *
  * Retrieve information about the device.  Fills in provided
@@ -272,10 +223,10 @@ struct vfio_device_info {
 	__u32	num_regions;	/* Max region index + 1 */
 	__u32	num_irqs;	/* Max IRQ index + 1 */
 };
-#define VFIO_DEVICE_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 11)
+#define VFIO_DEVICE_GET_INFO		_IO(VFIO_TYPE, VFIO_BASE + 7)
 
 /**
- * VFIO_DEVICE_GET_REGION_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 12,
+ * VFIO_DEVICE_GET_REGION_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 8,
  *				       struct vfio_region_info)
  *
  * Retrieve information about a device region.  Caller provides
@@ -297,10 +248,10 @@ struct vfio_region_info {
 	__u64	size;		/* Region size (bytes) */
 	__u64	offset;		/* Region offset from start of device fd */
 };
-#define VFIO_DEVICE_GET_REGION_INFO	_IO(VFIO_TYPE, VFIO_BASE + 12)
+#define VFIO_DEVICE_GET_REGION_INFO	_IO(VFIO_TYPE, VFIO_BASE + 8)
 
 /**
- * VFIO_DEVICE_GET_IRQ_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 13,
+ * VFIO_DEVICE_GET_IRQ_INFO - _IOWR(VFIO_TYPE, VFIO_BASE + 9,
  *				    struct vfio_irq_info)
  *
  * Retrieve information about a device IRQ.  Caller provides
@@ -341,10 +292,10 @@ struct vfio_irq_info {
 	__u32	index;		/* IRQ index */
 	__s32	count;		/* Number of IRQs within this index */
 };
-#define VFIO_DEVICE_GET_IRQ_INFO	_IO(VFIO_TYPE, VFIO_BASE + 13)
+#define VFIO_DEVICE_GET_IRQ_INFO	_IO(VFIO_TYPE, VFIO_BASE + 9)
 
 /**
- * VFIO_DEVICE_SET_IRQS - _IOW(VFIO_TYPE, VFIO_BASE + 14, struct vfio_irq_set)
+ * VFIO_DEVICE_SET_IRQS - _IOW(VFIO_TYPE, VFIO_BASE + 10, struct vfio_irq_set)
  *
  * Set signaling, masking, and unmasking of interrupts.  Caller provides
  * struct vfio_irq_set with all fields set.  'start' and 'count' indicate
@@ -395,7 +346,7 @@ struct vfio_irq_set {
 	__s32	count;
 	__u8	data[];
 };
-#define VFIO_DEVICE_SET_IRQS		_IO(VFIO_TYPE, VFIO_BASE + 14)
+#define VFIO_DEVICE_SET_IRQS		_IO(VFIO_TYPE, VFIO_BASE + 10)
 
 #define VFIO_IRQ_SET_DATA_TYPE_MASK	(VFIO_IRQ_SET_DATA_NONE | \
 					 VFIO_IRQ_SET_DATA_BOOL | \
@@ -404,11 +355,11 @@ struct vfio_irq_set {
 					 VFIO_IRQ_SET_ACTION_UNMASK | \
 					 VFIO_IRQ_SET_ACTION_TRIGGER)
 /**
- * VFIO_DEVICE_RESET - _IO(VFIO_TYPE, VFIO_BASE + 15)
+ * VFIO_DEVICE_RESET - _IO(VFIO_TYPE, VFIO_BASE + 11)
  *
  * Reset a device.
  */
-#define VFIO_DEVICE_RESET		_IO(VFIO_TYPE, VFIO_BASE + 15)
+#define VFIO_DEVICE_RESET		_IO(VFIO_TYPE, VFIO_BASE + 11)
 
 /*
  * The VFIO-PCI bus driver makes use of the following fixed region and
@@ -434,5 +385,57 @@ enum {
 	VFIO_PCI_MSIX_IRQ_INDEX,
 	VFIO_PCI_NUM_IRQS
 };
+
+/* -------- API for x86 VFIO IOMMU -------- */
+
+/**
+ * VFIO_IOMMU_GET_INFO - _IOR(VFIO_TYPE, VFIO_BASE + 12, struct vfio_iommu_info)
+ *
+ * Retrieve information about the IOMMU object. Fills in provided
+ * struct vfio_iommu_info. Caller sets argsz.
+ *
+ * XXX Should we do these by CHECK_EXTENSION too?
+ */
+struct vfio_iommu_x86_info {
+	__u32	argsz;
+	__u32	flags;
+#define VFIO_IOMMU_INFO_PGSIZES (1 << 0)	/* supported page sizes info */
+	__u64	iova_pgsizes;		/* Bitmap of supported page sizes */
+};
+
+#define VFIO_IOMMU_GET_INFO _IO(VFIO_TYPE, VFIO_BASE + 12)
+
+/**
+ * VFIO_IOMMU_MAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 13, struct vfio_dma_map)
+ *
+ * Map process virtual addresses to IO virtual addresses using the
+ * provided struct vfio_dma_map. Caller sets argsz. READ &/ WRITE required.
+ */
+struct vfio_iommu_x86_dma_map {
+	__u32	argsz;
+	__u32 	flags;
+#define VFIO_DMA_MAP_FLAG_READ (1 << 0)		/* readable from device */
+#define VFIO_DMA_MAP_FLAG_WRITE (1 << 1)	/* writable from device */
+	__u64	 vaddr;				/* Process virtual address */
+	__u64	 iova;				/* IO virtual address */
+	__u64	 size;				/* Size of mapping (bytes) */
+};
+
+#define VFIO_IOMMU_MAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 13)
+
+/**
+ * VFIO_IOMMU_UNMAP_DMA - _IOW(VFIO_TYPE, VFIO_BASE + 14, struct vfio_dma_unmap)
+ *
+ * Unmap IO virtual addresses using the provided struct vfio_dma_unmap.
+ * Caller sets argsz.
+ */
+struct vfio_iommu_x86_dma_unmap {
+	__u32	argsz;
+	__u32	flags;
+	__u64	iova;				/* IO virtual address */
+	__u64	size;				/* Size of mapping (bytes) */
+};
+
+#define VFIO_IOMMU_UNMAP_DMA _IO(VFIO_TYPE, VFIO_BASE + 14)
 
 #endif /* VFIO_H */
