@@ -97,10 +97,6 @@ extern int iommu_attach_device(struct iommu_domain *domain,
 			       struct device *dev);
 extern void iommu_detach_device(struct iommu_domain *domain,
 				struct device *dev);
-extern int iommu_attach_group(struct iommu_domain *domain,
-			      struct iommu_group *group);
-extern void iommu_detach_group(struct iommu_domain *domain,
-			       struct iommu_group *group);
 extern int iommu_map(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot);
 extern size_t iommu_unmap(struct iommu_domain *domain, unsigned long iova,
@@ -111,19 +107,24 @@ extern int iommu_domain_has_cap(struct iommu_domain *domain,
 				unsigned long cap);
 extern void iommu_set_fault_handler(struct iommu_domain *domain,
 					iommu_fault_handler_t handler);
+
+extern int iommu_attach_group(struct iommu_domain *domain,
+			      struct iommu_group *group);
+extern void iommu_detach_group(struct iommu_domain *domain,
+			       struct iommu_group *group);
 extern struct iommu_group *iommu_group_alloc(void);
 extern int iommu_group_add_device(struct iommu_group *group,
 				  struct device *dev);
 extern void iommu_group_remove_device(struct device *dev);
-int iommu_group_for_each_dev(struct iommu_group *group, void *data,
-			     int (*fn)(struct device *, void *));
-struct iommu_group *iommu_group_get(struct device *dev);
-void iommu_group_put(struct iommu_group *group);
-int iommu_group_register_notifier(struct iommu_group *group,
-				  struct notifier_block *nb);
-int iommu_group_unregister_notifier(struct iommu_group *group,
-				    struct notifier_block *nb);
-int iommu_group_id(struct iommu_group *group);
+extern int iommu_group_for_each_dev(struct iommu_group *group, void *data,
+				    int (*fn)(struct device *, void *));
+extern struct iommu_group *iommu_group_get(struct device *dev);
+extern void iommu_group_put(struct iommu_group *group);
+extern int iommu_group_register_notifier(struct iommu_group *group,
+					 struct notifier_block *nb);
+extern int iommu_group_unregister_notifier(struct iommu_group *group,
+					   struct notifier_block *nb);
+extern int iommu_group_id(struct iommu_group *group);
 
 /**
  * report_iommu_fault() - report about an IOMMU fault to the IOMMU framework
@@ -223,6 +224,60 @@ static inline void iommu_set_fault_handler(struct iommu_domain *domain,
 {
 }
 
+int iommu_attach_group(struct iommu_domain *domain, struct iommu_group *group)
+{
+	return -ENODEV;
+}
+
+void iommu_detach_group(struct iommu_domain *domain, struct iommu_group *group)
+{
+}
+
+struct iommu_group *iommu_group_alloc(void)
+{
+	return ERR_PTR(-ENODEV);
+}
+
+int iommu_group_add_device(struct iommu_group *group, struct device *dev)
+{
+	return -ENODEV;
+}
+
+void iommu_group_remove_device(struct device *dev)
+{
+}
+
+int iommu_group_for_each_dev(struct iommu_group *group, void *data,
+			     int (*fn)(struct device *, void *))
+{
+	return -ENODEV;
+}
+
+struct iommu_group *iommu_group_get(struct device *dev)
+{
+	return NULL;
+}
+
+void iommu_group_put(struct iommu_group *group)
+{
+}
+
+int iommu_group_register_notifier(struct iommu_group *group,
+				  struct notifier_block *nb)
+{
+	return -ENODEV;
+}
+
+int iommu_group_unregister_notifier(struct iommu_group *group,
+				    struct notifier_block *nb)
+{
+	return 0;
+}
+
+int iommu_group_id(struct iommu_group *group)
+{
+	return -ENODEV;
+}
 #endif /* CONFIG_IOMMU_API */
 
 #endif /* __LINUX_IOMMU_H */
