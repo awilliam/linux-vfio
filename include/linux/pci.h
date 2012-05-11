@@ -1586,6 +1586,7 @@ static inline bool pci_is_pcie(struct pci_dev *dev)
 }
 
 void pci_request_acs(void);
+struct pci_dev *pci_acs_enabled(struct pci_dev *dev);
 
 
 #define PCI_VPD_LRDT			0x80	/* Large Resource Data Type */
