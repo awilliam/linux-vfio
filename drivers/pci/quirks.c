@@ -3109,3 +3109,42 @@ int pci_dev_specific_reset(struct pci_dev *dev, int probe)
 
 	return -ENOTTY;
 }
+
+struct pci_dev *pci_dma_quirk(struct pci_dev *dev)
+{
+	/*
+	 * https://bugzilla.redhat.com/show_bug.cgi?id=605888
+	 *
+	 * Some Ricoh devices use the function 0 source ID for DMA on
+	 * other functions of a multifunction device.  The DMA devices
+	 * is therefore function 0, which will have implications of the
+	 * iommu grouping of these devices.
+	 */
+	if (dev->vendor == PCI_VENDOR_ID_RICOH &&
+	    (dev->device == 0xe822 || dev->device == 0xe230 ||
+	     dev->device == 0xe832 || dev->device == 0xe476)) {
+		dev = pci_get_slot(dev->bus,
+				   PCI_DEVFN(PCI_SLOT(dev->devfn), 0));
+	}
+
+	/*
+	 * USB hosts can't really be split.  Devices are potentially
+	 * accessible from multiple functions of the device, therefore
+	 * map them all to the lowest numbered USB function of the slot.
+	 */
+	if ((dev->class >> 8) == PCI_CLASS_SERIAL_USB && PCI_FUNC(dev->devfn)) {
+		struct pci_dev *dma_dev;
+		int func = 0;
+
+		do {
+			dma_dev = pci_get_slot(dev->bus,
+					       PCI_DEVFN(PCI_SLOT(dev->devfn),
+							 func++));
+		} while (!dma_dev || (dma_dev != dev &&
+			 (dma_dev->class >> 8) != PCI_CLASS_SERIAL_USB));
+
+		dev = dma_dev;
+	}
+			 
+	return dev;
+}
