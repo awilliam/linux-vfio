@@ -3149,3 +3149,32 @@ struct pci_dev *pci_dma_source(struct pci_dev *dev)
 
 	return dev;
 }
+
+static const struct pci_dev_acs_enabled {
+	u16 vendor;
+	u16 device;
+	bool (*acs_enabled)(struct pci_dev *dev, u16 acs_flags);
+} pci_dev_acs_enabled[] = {
+	{ 0 }
+};
+
+bool pci_dev_specific_acs_enabled(struct pci_dev *dev, u16 acs_flags)
+{
+	const struct pci_dev_acs_enabled *i;
+
+	/*
+	 * Allow devices that do not expose standard PCI ACS capabilities
+	 * or control to indicate their support here.  Multi-function devices
+	 * which do not allow internal peer-to-peer between functions, but
+	 * do not implement PCI ACS may wish to return true here.
+	 */
+	for (i = pci_dev_acs_enabled; i->acs_enabled; i++) {
+		if ((i->vendor == dev->vendor ||
+		     i->vendor == (u16)PCI_ANY_ID) &&
+		    (i->device == dev->device ||
+		     i->device == (u16)PCI_ANY_ID))
+			return i->acs_enabled(dev, acs_flags);
+	}
+
+	return false;
+}
