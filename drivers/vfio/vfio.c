@@ -1369,6 +1369,13 @@ static int __init vfio_init(void)
 
 	pr_info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 
+	/*
+	 * Attempt to load known iommu-drivers.  This gives us a working
+	 * environment without the user needing to explicitly load iommu
+	 * drivers.
+	 */
+	request_module_nowait("vfio_iommu_x86");
+
 	return 0;
 
 err_groups_cdev:
