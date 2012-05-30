@@ -288,11 +288,6 @@ static int iommu_init_device(struct device *dev)
 	} else
 		dma_pdev = pdev;
 
-	if (!pdev->is_virtfn && PCI_FUNC(pdev->devfn) && iommu_group_mf &&
-	    pdev->hdr_type == PCI_HEADER_TYPE_NORMAL)
-		dma_pdev = pci_get_slot(pdev->bus,
-					PCI_DEVFN(PCI_SLOT(pdev->devfn), 0));
-
 	dma_pdev = pci_dma_source(dma_pdev);
 
 	if (dma_pdev->multifunction &&
