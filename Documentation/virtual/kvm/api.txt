@@ -1982,6 +1982,16 @@ when the eventfd is triggered.  Specifying KVM_IRQFD_FLAG_DEASSIGN
 removes the previously set irqfd matching both kvm_irqfd.fd and
 kvm_irqfd.gsi.
 
+With KVM_CAP_IRQFD_LEVEL_EOI KVM_IRQFD is able to support a level
+triggered interrupt model where the irqchip pin (kvm_irqfd.gsi) is
+asserted from the kvm_irqfd.fd eventfd and remain asserted until the
+guest issues an EOI for the irqchip pin.  The level interrupt is
+then de-asserted and the caller is notified via the eventfd specified
+by kvm_irqfd.fd2.  When available, this feature is enabled using the
+KVM_IRQFD_FLAG_LEVEL_EOI flag.  De-assigning an irqfd setup using
+this flag should include both KVM_IRQFD_FLAG_DEASSIGN and
+KVM_IRQFD_FLAG_LEVEL_EOI and will be matched using kvm_irqfd.fd,
+kvm_irqfd.gsi, and kvm_irqfd.fd2.
 
 5. The kvm_run structure
 ------------------------

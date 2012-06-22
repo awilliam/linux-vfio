@@ -49,9 +49,13 @@ struct _irqfd {
 	wait_queue_t wait;
 	/* Update side is protected by irqfds.lock */
 	struct kvm_kernel_irq_routing_entry __rcu *irq_entry;
-	/* Used for level IRQ fast-path */
+	/* Used for IRQ fast-path */
 	int gsi;
 	struct work_struct inject;
+	/* Used for level EOI path */
+	int irq_source_id;
+	struct eventfd_ctx *eoi_eventfd;
+	struct kvm_irq_ack_notifier notifier;
 	/* Used for setup/shutdown */
 	struct eventfd_ctx *eventfd;
 	struct list_head list;
@@ -62,13 +66,30 @@ struct _irqfd {
 static struct workqueue_struct *irqfd_cleanup_wq;
 
 static void
-irqfd_inject(struct work_struct *work)
+irqfd_inject_edge(struct work_struct *work)
 {
 	struct _irqfd *irqfd = container_of(work, struct _irqfd, inject);
 	struct kvm *kvm = irqfd->kvm;
 
 	kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 1);
 	kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 0);
+}
+
+static void
+irqfd_inject_level(struct work_struct *work)
+{
+	struct _irqfd *irqfd = container_of(work, struct _irqfd, inject);
+
+	kvm_set_irq(irqfd->kvm, irqfd->irq_source_id, irqfd->gsi, 1);
+}
+
+static void
+irqfd_ack_level(struct kvm_irq_ack_notifier *notifier)
+{
+	struct _irqfd *irqfd  = container_of(notifier, struct _irqfd, notifier);
+
+	kvm_set_irq(irqfd->kvm, irqfd->irq_source_id, irqfd->gsi, 0);
+	eventfd_signal(irqfd->eoi_eventfd, 1);
 }
 
 /*
@@ -96,6 +117,14 @@ irqfd_shutdown(struct work_struct *work)
 	 * It is now safe to release the object's resources
 	 */
 	eventfd_ctx_put(irqfd->eventfd);
+
+	if (irqfd->eoi_eventfd) {
+		kvm_unregister_irq_ack_notifier(irqfd->kvm, &irqfd->notifier);
+		eventfd_ctx_put(irqfd->eoi_eventfd);
+		kvm_set_irq(irqfd->kvm, irqfd->irq_source_id, irqfd->gsi, 0);
+		kvm_free_irq_source_id(irqfd->kvm, irqfd->irq_source_id);
+	}
+
 	kfree(irqfd);
 }
 
@@ -203,8 +232,8 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	struct kvm_irq_routing_table *irq_rt;
 	struct _irqfd *irqfd, *tmp;
 	struct file *file = NULL;
-	struct eventfd_ctx *eventfd = NULL;
-	int ret;
+	struct eventfd_ctx *eventfd = NULL, *eoi_eventfd = NULL;
+	int ret, irq_source_id = -1;
 	unsigned int events;
 
 	irqfd = kzalloc(sizeof(*irqfd), GFP_KERNEL);
@@ -214,7 +243,30 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	irqfd->kvm = kvm;
 	irqfd->gsi = args->gsi;
 	INIT_LIST_HEAD(&irqfd->list);
-	INIT_WORK(&irqfd->inject, irqfd_inject);
+
+	if (args->flags & KVM_IRQFD_FLAG_LEVEL_EOI) {
+		irq_source_id = kvm_request_irq_source_id(kvm);
+		if (irq_source_id < 0) {
+			ret = irq_source_id;
+			goto fail;
+		}
+
+		eoi_eventfd = eventfd_ctx_fdget(args->fd2);
+		if (IS_ERR(eoi_eventfd)) {
+			ret = PTR_ERR(eoi_eventfd);
+			goto fail;
+		}
+
+		irqfd->irq_source_id = irq_source_id;
+		irqfd->eoi_eventfd = eoi_eventfd;
+		irqfd->notifier.gsi = args->gsi;
+		irqfd->notifier.irq_acked = irqfd_ack_level;
+		kvm_register_irq_ack_notifier(kvm, &irqfd->notifier);
+
+		INIT_WORK(&irqfd->inject, irqfd_inject_level);
+	} else
+		INIT_WORK(&irqfd->inject, irqfd_inject_edge);
+
 	INIT_WORK(&irqfd->shutdown, irqfd_shutdown);
 
 	file = eventfd_fget(args->fd);
@@ -231,6 +283,11 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 
 	irqfd->eventfd = eventfd;
 
+	if (eventfd == eoi_eventfd) {
+		ret = -EINVAL;
+		goto fail;
+	}
+
 	/*
 	 * Install our own custom wake-up handling so we are notified via
 	 * a callback whenever someone signals the underlying eventfd
@@ -242,7 +299,8 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 
 	ret = 0;
 	list_for_each_entry(tmp, &kvm->irqfds.items, list) {
-		if (irqfd->eventfd != tmp->eventfd)
+		if (irqfd->eventfd != tmp->eventfd &&
+		    irqfd->eventfd != tmp->eoi_eventfd)
 			continue;
 		/* This fd is used for another irq already. */
 		ret = -EBUSY;
@@ -282,6 +340,14 @@ fail:
 	if (!IS_ERR(file))
 		fput(file);
 
+	if (eoi_eventfd && !IS_ERR(eoi_eventfd)) {
+		kvm_unregister_irq_ack_notifier(kvm, &irqfd->notifier);
+		eventfd_ctx_put(eoi_eventfd);
+	}
+
+	if (irq_source_id >= 0)
+		kvm_free_irq_source_id(kvm, irq_source_id);
+
 	kfree(irqfd);
 	return ret;
 }
@@ -301,16 +367,26 @@ static int
 kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
 {
 	struct _irqfd *irqfd, *tmp;
-	struct eventfd_ctx *eventfd;
+	struct eventfd_ctx *eventfd, *eoi_eventfd = NULL;
 
 	eventfd = eventfd_ctx_fdget(args->fd);
 	if (IS_ERR(eventfd))
 		return PTR_ERR(eventfd);
 
+	if (args->flags & KVM_IRQFD_FLAG_LEVEL_EOI) {
+		eoi_eventfd = eventfd_ctx_fdget(args->fd2);
+		if (IS_ERR(eoi_eventfd)) {
+			eventfd_ctx_put(eventfd);
+			return PTR_ERR(eoi_eventfd);
+		}
+	}
+
 	spin_lock_irq(&kvm->irqfds.lock);
 
 	list_for_each_entry_safe(irqfd, tmp, &kvm->irqfds.items, list) {
-		if (irqfd->eventfd == eventfd && irqfd->gsi == args->gsi) {
+		if (irqfd->eventfd == eventfd &&
+		    irqfd->gsi == args->gsi &&
+		    irqfd->eoi_eventfd == eoi_eventfd) {
 			/*
 			 * This rcu_assign_pointer is needed for when
 			 * another thread calls kvm_irq_routing_update before
@@ -326,6 +402,8 @@ kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
 
 	spin_unlock_irq(&kvm->irqfds.lock);
 	eventfd_ctx_put(eventfd);
+	if (eoi_eventfd)
+		eventfd_ctx_put(eoi_eventfd);
 
 	/*
 	 * Block until we know all outstanding shutdown jobs have completed
