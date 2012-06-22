@@ -1965,6 +1965,23 @@ return the hash table order in the parameter.  (If the guest is using
 the virtualized real-mode area (VRMA) facility, the kernel will
 re-create the VMRA HPTEs on the next KVM_RUN of any vcpu.)
 
+4.76 KVM_IRQFD
+
+Capability: KVM_CAP_IRQFD
+Architectures: x86
+Type: vm ioctl
+Parameters: struct kvm_irqfd (in)
+Returns: 0 on success, -1 on error
+
+Allows setting an eventfd to directly trigger a guest interrupt
+kvm_irqfd.fd specifies the file descriptor to use as the eventfd and
+kvm_irqfd.gsi specifies the irqchip pin toggled by this event.  By
+default this interface only supports edge triggered interrupts,
+meaning the specified gsi is asserted and immediately de-asserted
+when the eventfd is triggered.  Specifying KVM_IRQFD_FLAG_DEASSIGN
+removes the previously set irqfd matching both kvm_irqfd.fd and
+kvm_irqfd.gsi.
+
 
 5. The kvm_run structure
 ------------------------
