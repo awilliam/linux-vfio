@@ -358,6 +358,7 @@ kvm_eventfd_init(struct kvm *kvm)
 	spin_lock_init(&kvm->irqfds.lock);
 	INIT_LIST_HEAD(&kvm->irqfds.items);
 	INIT_LIST_HEAD(&kvm->ioeventfds);
+	INIT_LIST_HEAD(&kvm->eoi_eventfds);
 }
 
 /*
@@ -732,4 +733,92 @@ kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 		return kvm_deassign_ioeventfd(kvm, args);
 
 	return kvm_assign_ioeventfd(kvm, args);
+}
+
+/*
+ * --------------------------------------------------------------------
+ *  eoi_eventfd: Translate KVM APIC/IOAPIC EOI into eventfd signal.
+ *
+ *  userspace can register GSIs with an eventfd for receiving
+ *  notification when an EOI occurs.
+ * --------------------------------------------------------------------
+ */
+
+struct _eoi_eventfd {
+	struct kvm *kvm;
+	struct eventfd_ctx *eventfd;
+	struct kvm_irq_ack_notifier notifier;
+	struct list_head list;
+};
+
+static void kvm_eoi_eventfd_acked(struct kvm_irq_ack_notifier *notifier)
+{
+	struct _eoi_eventfd *eoifd;
+
+	eoifd = container_of(notifier, struct _eoi_eventfd, notifier);
+
+	eventfd_signal(eoifd->eventfd, 1);
+}
+
+static int kvm_assign_eoi_eventfd(struct kvm *kvm, struct kvm_eoi_eventfd *args)
+{
+	struct eventfd_ctx *eventfd;
+	struct _eoi_eventfd *eoifd;
+
+	eventfd = eventfd_ctx_fdget(args->fd);
+	if (IS_ERR(eventfd))
+		return PTR_ERR(eventfd);
+
+	eoifd = kzalloc(sizeof(*eoifd), GFP_KERNEL);
+	if (!eoifd) {
+		eventfd_ctx_put(eventfd);
+		return -ENOMEM;
+	}
+
+	INIT_LIST_HEAD(&eoifd->list);
+	eoifd->kvm = kvm;
+	eoifd->eventfd = eventfd;
+	eoifd->notifier.gsi = args->gsi;
+	eoifd->notifier.irq_acked = kvm_eoi_eventfd_acked;
+
+	list_add_tail(&eoifd->list, &kvm->eoi_eventfds);
+	kvm_register_irq_ack_notifier(kvm, &eoifd->notifier);
+
+	return 0;
+}
+static int kvm_deassign_eoi_eventfd(struct kvm *kvm,
+				   struct kvm_eoi_eventfd *args)
+{
+	struct eventfd_ctx *eventfd;
+	struct _eoi_eventfd *eoifd, *tmp;
+	int ret = -ENOENT;
+
+	eventfd = eventfd_ctx_fdget(args->fd);
+	if (IS_ERR(eventfd))
+		return PTR_ERR(eventfd);
+
+	list_for_each_entry_safe(eoifd, tmp, &kvm->eoi_eventfds, list) {
+		if (eoifd->eventfd != eventfd ||
+		    eoifd->notifier.gsi != args->gsi)
+			continue;
+
+		kvm_unregister_irq_ack_notifier(kvm, &eoifd->notifier);
+		eventfd_ctx_put(eoifd->eventfd);
+		list_del(&eoifd->list);
+		kfree(eoifd);
+		ret = 0;
+		break;
+	}
+
+	eventfd_ctx_put(eventfd);
+
+	return ret;
+}
+
+int kvm_eoi_eventfd(struct kvm *kvm, struct kvm_eoi_eventfd *args)
+{
+	if (args->flags & KVM_EOI_EVENTFD_FLAG_DEASSIGN)
+		return kvm_deassign_eoi_eventfd(kvm, args);
+
+	return kvm_assign_eoi_eventfd(kvm, args);
 }

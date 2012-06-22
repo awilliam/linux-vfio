@@ -1993,6 +1993,20 @@ this flag should include both KVM_IRQFD_FLAG_DEASSIGN and
 KVM_IRQFD_FLAG_LEVEL_EOI and will be matched using kvm_irqfd.fd,
 kvm_irqfd.gsi, and kvm_irqfd.fd2.
 
+4.77 KVM_EOI_EVENTFD
+
+Capability: KVM_CAP_EOI_EVENTFD
+Architectures: x86
+Type: vm ioctl
+Parameters: struct kvm_eoi_eventfd (in)
+Returns: 0 on success, -1 on error
+
+This interface allows userspace to be notified through an eventfd for
+EOI writes to the in-kernel irqchip.  kvm_eoi_eventfd.fd specifies
+the eventfd to signal on EOI to kvm_eoi_eventfd.gsi.  To disable,
+use KVM_EOI_EVENTFD_FLAG_DEASSIGN and specify both the original fd
+and gsi.
+
 5. The kvm_run structure
 ------------------------
 

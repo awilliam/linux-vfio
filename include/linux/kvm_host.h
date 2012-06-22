@@ -285,6 +285,7 @@ struct kvm {
 		struct list_head  items;
 	} irqfds;
 	struct list_head ioeventfds;
+	struct list_head eoi_eventfds;
 #endif
 	struct kvm_vm_stat stat;
 	struct kvm_arch arch;
@@ -828,6 +829,7 @@ int kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args);
 void kvm_irqfd_release(struct kvm *kvm);
 void kvm_irq_routing_update(struct kvm *, struct kvm_irq_routing_table *);
 int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args);
+int kvm_eoi_eventfd(struct kvm *kvm, struct kvm_eoi_eventfd *args);
 
 #else
 
@@ -849,6 +851,11 @@ static inline void kvm_irq_routing_update(struct kvm *kvm,
 #endif
 
 static inline int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
+{
+	return -ENOSYS;
+}
+
+static inline int kvm_eoi_eventfd(struct kvm *kvm, struct kvm_eoi_eventfd *args)
 {
 	return -ENOSYS;
 }

@@ -619,6 +619,7 @@ struct kvm_ppc_smmu_info {
 #define KVM_CAP_S390_COW 79
 #define KVM_CAP_PPC_ALLOC_HTAB 80
 #define KVM_CAP_IRQFD_LEVEL_EOI 81
+#define KVM_CAP_EOI_EVENTFD 82
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
@@ -753,6 +754,15 @@ struct kvm_msi {
 	__u32 data;
 	__u32 flags;
 	__u8  pad[16];
+};
+
+#define KVM_EOI_EVENTFD_FLAG_DEASSIGN (1 << 0)
+
+struct kvm_eoi_eventfd {
+	__u32 fd;
+	__u32 gsi;
+	__u32 flags;
+	__u8 pad[20];
 };
 
 /*
@@ -908,6 +918,8 @@ struct kvm_s390_ucas_mapping {
 #define KVM_SET_ONE_REG		  _IOW(KVMIO,  0xac, struct kvm_one_reg)
 /* VM is being stopped by host */
 #define KVM_KVMCLOCK_CTRL	  _IO(KVMIO,   0xad)
+/* Available with KVM_CAP_EOI_EVENTFD */
+#define KVM_EOI_EVENTFD           _IOW(KVMIO,  0xae, struct kvm_eoi_eventfd)
 
 #define KVM_DEV_ASSIGN_ENABLE_IOMMU	(1 << 0)
 #define KVM_DEV_ASSIGN_PCI_2_3		(1 << 1)

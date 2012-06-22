@@ -2149,6 +2149,7 @@ int kvm_dev_ioctl_check_extension(long ext)
 	case KVM_CAP_PCI_2_3:
 	case KVM_CAP_KVMCLOCK_CTRL:
 	case KVM_CAP_IRQFD_LEVEL_EOI:
+	case KVM_CAP_EOI_EVENTFD:
 		r = 1;
 		break;
 	case KVM_CAP_COALESCED_MMIO:
