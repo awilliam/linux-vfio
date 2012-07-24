@@ -1936,7 +1936,7 @@ Capability: KVM_CAP_IRQFD
 Architectures: x86
 Type: vm ioctl
 Parameters: struct kvm_irqfd (in)
-Returns: 0 on success, -1 on error
+Returns: 0 (or >= 0) on success, -1 on error
 
 Allows setting an eventfd to directly trigger a guest interrupt.
 kvm_irqfd.fd specifies the file descriptor to use as the eventfd and
@@ -1945,6 +1945,15 @@ an event is tiggered on the eventfd, an interrupt is injected into
 the guest using the specified gsi pin.  The irqfd is removed using
 the KVM_IRQFD_FLAG_DEASSIGN flag, specifying both kvm_irqfd.fd
 and kvm_irqfd.gsi.
+
+The KVM_IRQFD_FLAG_LEVEL flag indicates the gsi input is for a level
+triggered interrupt.  In this case a new irqchip input is allocated
+which is logically OR'd with other inputs allowing multiple sources
+to independently assert level interrupts.  The KVM_IRQFD_FLAG_LEVEL
+is only necessary on setup, teardown is identical to that above.  The
+return value when called with this flag is a key (>= 0) which may be
+used to associate this irqfd with other ioctls.  KVM_IRQFD_FLAG_LEVEL
+support is indicated by KVM_CAP_IRQFD_LEVEL.
 
 4.76 KVM_PPC_ALLOCATE_HTAB
 

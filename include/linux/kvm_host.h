@@ -285,6 +285,10 @@ struct kvm {
 		struct list_head  items;
 	} irqfds;
 	struct list_head ioeventfds;
+	struct {
+		struct mutex lock;
+		struct list_head items;
+	} irqsources;
 #endif
 	struct kvm_vm_stat stat;
 	struct kvm_arch arch;

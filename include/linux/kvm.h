@@ -618,6 +618,7 @@ struct kvm_ppc_smmu_info {
 #define KVM_CAP_PPC_GET_SMMU_INFO 78
 #define KVM_CAP_S390_COW 79
 #define KVM_CAP_PPC_ALLOC_HTAB 80
+#define KVM_CAP_IRQFD_LEVEL 81
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
@@ -683,6 +684,8 @@ struct kvm_xen_hvm_config {
 #endif
 
 #define KVM_IRQFD_FLAG_DEASSIGN (1 << 0)
+/* Available with KVM_CAP_IRQFD_LEVEL */
+#define KVM_IRQFD_FLAG_LEVEL (1 << 1)
 
 struct kvm_irqfd {
 	__u32 fd;

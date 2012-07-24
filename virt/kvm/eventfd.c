@@ -36,6 +36,66 @@
 #include "iodev.h"
 
 /*
+ * An irq_source_id can be created from KVM_IRQFD for level interrupt
+ * injections and shared with other interfaces for EOI or de-assert.
+ * Create an object with reference counting to make it easy to use.
+ */
+struct _irq_source {
+	int id; /* the IRQ source ID */
+	int gsi;
+	struct kvm *kvm;
+	struct list_head list;
+	struct kref kref;
+};
+
+static void _irq_source_release(struct kref *kref)
+{
+	struct _irq_source *source =
+		container_of(kref, struct _irq_source, kref);
+
+	/* This also de-asserts */
+	kvm_free_irq_source_id(source->kvm, source->id);
+	list_del(&source->list);
+	kfree(source);
+}
+
+static void _irq_source_put(struct _irq_source *source)
+{
+	if (source) {
+		mutex_lock(&source->kvm->irqsources.lock);
+		kref_put(&source->kref, _irq_source_release);
+		mutex_unlock(&source->kvm->irqsources.lock);
+	}
+}
+
+static struct _irq_source *_irq_source_alloc(struct kvm *kvm, int gsi)
+{
+	struct _irq_source *source;
+	int id;
+
+	source = kzalloc(sizeof(*source), GFP_KERNEL);
+	if (!source)
+		return ERR_PTR(-ENOMEM);
+
+	id = kvm_request_irq_source_id(kvm);
+	if (id < 0) {
+		kfree(source);
+		return ERR_PTR(id);
+	}
+
+	kref_init(&source->kref);
+	source->kvm = kvm;
+	source->id = id;
+	source->gsi = gsi;
+
+	mutex_lock(&kvm->irqsources.lock);
+	list_add_tail(&source->list, &kvm->irqsources.items);
+	mutex_unlock(&kvm->irqsources.lock);
+
+	return source;
+}
+
+/*
  * --------------------------------------------------------------------
  * irqfd: Allows an fd to be used to inject an interrupt to the guest
  *
@@ -52,6 +112,8 @@ struct _irqfd {
 	/* Used for level IRQ fast-path */
 	int gsi;
 	struct work_struct inject;
+	/* IRQ source ID for level triggered irqfds */
+	struct _irq_source *source;
 	/* Used for setup/shutdown */
 	struct eventfd_ctx *eventfd;
 	struct list_head list;
@@ -62,13 +124,29 @@ struct _irqfd {
 static struct workqueue_struct *irqfd_cleanup_wq;
 
 static void
-irqfd_inject(struct work_struct *work)
+irqfd_inject_edge(struct work_struct *work)
 {
 	struct _irqfd *irqfd = container_of(work, struct _irqfd, inject);
 	struct kvm *kvm = irqfd->kvm;
 
 	kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 1);
 	kvm_set_irq(kvm, KVM_USERSPACE_IRQ_SOURCE_ID, irqfd->gsi, 0);
+}
+
+static void
+irqfd_inject_level(struct work_struct *work)
+{
+	struct _irqfd *irqfd = container_of(work, struct _irqfd, inject);
+
+	/*
+	 * We can safely ignore the kvm_set_irq return value here.  If
+	 * masked, the irr bit is still set and will eventually be serviced.
+	 * This interface does not guarantee immediate injection.  If
+	 * coalesced, an eoi will be coming where we can de-assert and
+	 * re-inject if necessary.  NB, if you need to know if an interrupt
+	 * was coalesced, this interface is not for you.
+	 */
+	kvm_set_irq(irqfd->kvm, irqfd->source->id, irqfd->gsi, 1);
 }
 
 /*
@@ -96,6 +174,9 @@ irqfd_shutdown(struct work_struct *work)
 	 * It is now safe to release the object's resources
 	 */
 	eventfd_ctx_put(irqfd->eventfd);
+
+	_irq_source_put(irqfd->source);
+
 	kfree(irqfd);
 }
 
@@ -202,9 +283,10 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 {
 	struct kvm_irq_routing_table *irq_rt;
 	struct _irqfd *irqfd, *tmp;
+	struct _irq_source *source = NULL;
 	struct file *file = NULL;
 	struct eventfd_ctx *eventfd = NULL;
-	int ret;
+	int ret = 0;
 	unsigned int events;
 
 	irqfd = kzalloc(sizeof(*irqfd), GFP_KERNEL);
@@ -214,7 +296,35 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	irqfd->kvm = kvm;
 	irqfd->gsi = args->gsi;
 	INIT_LIST_HEAD(&irqfd->list);
-	INIT_WORK(&irqfd->inject, irqfd_inject);
+
+	if (args->flags & KVM_IRQFD_FLAG_LEVEL) {
+		bool first = true;
+retry:
+		source = _irq_source_alloc(kvm, args->gsi);
+		if (IS_ERR(source)) {
+			/*
+			 * If the irqfd is released we queue the cleanup
+			 * wq but don't flush it.  This could mean there's
+			 * an irq source id waiting to be released.  flush
+			 * here and make another attempt.
+			 */
+			if (first) {
+				flush_workqueue(irqfd_cleanup_wq);
+				first = false;
+				goto retry;
+			}
+			ret = PTR_ERR(source);
+			goto fail;
+		}
+
+		irqfd->source = source;
+		INIT_WORK(&irqfd->inject, irqfd_inject_level);
+
+		/* On success, return the irq source ID as a "key" */
+		ret = source->id;
+	} else
+		INIT_WORK(&irqfd->inject, irqfd_inject_edge);
+
 	INIT_WORK(&irqfd->shutdown, irqfd_shutdown);
 
 	file = eventfd_fget(args->fd);
@@ -240,7 +350,6 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 
 	spin_lock_irq(&kvm->irqfds.lock);
 
-	ret = 0;
 	list_for_each_entry(tmp, &kvm->irqfds.items, list) {
 		if (irqfd->eventfd != tmp->eventfd)
 			continue;
@@ -273,13 +382,16 @@ kvm_irqfd_assign(struct kvm *kvm, struct kvm_irqfd *args)
 	 */
 	fput(file);
 
-	return 0;
+	return ret;
 
 fail:
+	if (source && !IS_ERR(source))
+		_irq_source_put(source);
+
 	if (eventfd && !IS_ERR(eventfd))
 		eventfd_ctx_put(eventfd);
 
-	if (!IS_ERR(file))
+	if (file && !IS_ERR(file))
 		fput(file);
 
 	kfree(irqfd);
@@ -292,6 +404,8 @@ kvm_eventfd_init(struct kvm *kvm)
 	spin_lock_init(&kvm->irqfds.lock);
 	INIT_LIST_HEAD(&kvm->irqfds.items);
 	INIT_LIST_HEAD(&kvm->ioeventfds);
+	mutex_init(&kvm->irqsources.lock);
+	INIT_LIST_HEAD(&kvm->irqsources.items);
 }
 
 /*
@@ -340,7 +454,7 @@ kvm_irqfd_deassign(struct kvm *kvm, struct kvm_irqfd *args)
 int
 kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args)
 {
-	if (args->flags & ~KVM_IRQFD_FLAG_DEASSIGN)
+	if (args->flags & ~(KVM_IRQFD_FLAG_DEASSIGN | KVM_IRQFD_FLAG_LEVEL))
 		return -EINVAL;
 
 	if (args->flags & KVM_IRQFD_FLAG_DEASSIGN)
