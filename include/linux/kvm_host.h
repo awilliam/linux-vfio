@@ -289,6 +289,10 @@ struct kvm {
 		struct mutex lock;
 		struct list_head items;
 	} irqsources;
+	struct {
+		spinlock_t lock;
+		struct list_head items;
+	} eoifds;
 #endif
 	struct kvm_vm_stat stat;
 	struct kvm_arch arch;
@@ -832,6 +836,8 @@ int kvm_irqfd(struct kvm *kvm, struct kvm_irqfd *args);
 void kvm_irqfd_release(struct kvm *kvm);
 void kvm_irq_routing_update(struct kvm *, struct kvm_irq_routing_table *);
 int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args);
+int kvm_eoifd(struct kvm *kvm, struct kvm_eoifd *args);
+void kvm_eoifd_release(struct kvm *kvm);
 
 #else
 
@@ -856,6 +862,13 @@ static inline int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 {
 	return -ENOSYS;
 }
+
+static inline int kvm_eoifd(struct kvm *kvm, struct kvm_eoifd *args)
+{
+	return -ENOSYS;
+}
+
+static inline void kvm_eoifd_release(struct kvm *kvm) {}
 
 #endif /* CONFIG_HAVE_KVM_EVENTFD */
 

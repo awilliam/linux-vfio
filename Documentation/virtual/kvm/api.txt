@@ -1989,6 +1989,27 @@ return the hash table order in the parameter.  (If the guest is using
 the virtualized real-mode area (VRMA) facility, the kernel will
 re-create the VMRA HPTEs on the next KVM_RUN of any vcpu.)
 
+4.77 KVM_EOIFD
+
+Capability: KVM_CAP_EOIFD
+Architectures: x86
+Type: vm ioctl
+Parameters: struct kvm_eoifd (in)
+Returns: 0 on success, < 0 on error
+
+KVM_EOIFD allows userspace to receive interrupt EOI notification
+through an eventfd.  kvm_eoifd.fd specifies the eventfd used for
+notification.  KVM_EOIFD_FLAG_DEASSIGN is used to de-assign an eoifd
+once assigned.  KVM_EOIFD also requires additional bits set in
+kvm_eoifd.flags to bind to the proper interrupt line.  The
+KVM_EOIFD_FLAG_LEVEL_IRQFD indicates that kvm_eoifd.key is provided
+and is a key from a level triggered interrupt (configured from
+KVM_IRQFD using KVM_IRQFD_FLAG_LEVEL).  The EOI notification is bound
+to the same GSI and irqchip input as the irqfd.  Both kvm_eoifd.key
+and KVM_EOIFD_FLAG_LEVEL_IRQFD must be specified on assignment and
+de-assignment of KVM_EOIFD.  A level irqfd may only be bound to a
+single eoifd.  KVM_CAP_EOIFD_LEVEL_IRQFD indicates support of
+KVM_EOIFD_FLAG_LEVEL_IRQFD.
 
 5. The kvm_run structure
 ------------------------

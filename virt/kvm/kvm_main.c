@@ -620,6 +620,8 @@ static int kvm_vm_release(struct inode *inode, struct file *filp)
 
 	kvm_irqfd_release(kvm);
 
+	kvm_eoifd_release(kvm);
+
 	kvm_put_kvm(kvm);
 	return 0;
 }
@@ -2093,6 +2095,15 @@ static long kvm_vm_ioctl(struct file *filp,
 		break;
 	}
 #endif
+	case KVM_EOIFD: {
+		struct kvm_eoifd data;
+
+		r = -EFAULT;
+		if (copy_from_user(&data, argp, sizeof data))
+			goto out;
+		r = kvm_eoifd(kvm, &data);
+		break;
+	}
 	default:
 		r = kvm_arch_vm_ioctl(filp, ioctl, arg);
 		if (r == -ENOTTY)

@@ -95,6 +95,25 @@ static struct _irq_source *_irq_source_alloc(struct kvm *kvm, int gsi)
 	return source;
 }
 
+static struct _irq_source *_irq_source_get_from_key(struct kvm *kvm, int key)
+{
+	struct _irq_source *tmp, *source = ERR_PTR(-ENOENT);
+
+	mutex_lock(&kvm->irqsources.lock);
+
+	list_for_each_entry(tmp, &kvm->irqsources.items, list) {
+		if (tmp->id == key) {
+			source = tmp;
+			kref_get(&source->kref);
+			break;
+		}
+	}
+
+	mutex_unlock(&kvm->irqsources.lock);
+
+	return source;
+}
+
 /*
  * --------------------------------------------------------------------
  * irqfd: Allows an fd to be used to inject an interrupt to the guest
@@ -406,6 +425,8 @@ kvm_eventfd_init(struct kvm *kvm)
 	INIT_LIST_HEAD(&kvm->ioeventfds);
 	mutex_init(&kvm->irqsources.lock);
 	INIT_LIST_HEAD(&kvm->irqsources.items);
+	spin_lock_init(&kvm->eoifds.lock);
+	INIT_LIST_HEAD(&kvm->eoifds.items);
 }
 
 /*
@@ -771,4 +792,319 @@ kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 		return kvm_deassign_ioeventfd(kvm, args);
 
 	return kvm_assign_ioeventfd(kvm, args);
+}
+
+/*
+ * --------------------------------------------------------------------
+ *  eoifd: Translate KVM APIC/IOAPIC EOI into eventfd signal.
+ *
+ *  userspace can register with an eventfd for receiving
+ *  notification when an EOI occurs.
+ * --------------------------------------------------------------------
+ */
+
+struct _eoifd {
+	/* eventfd triggered on EOI */
+	struct eventfd_ctx *eventfd;
+	/* irq source ID de-asserted on EOI */
+	struct _irq_source *source;
+	wait_queue_t wait;
+	/* EOI notification from KVM */
+	struct kvm_irq_ack_notifier notifier;
+	struct list_head list;
+	poll_table pt;
+	struct work_struct shutdown;
+};
+
+/* Called under eoifds.lock */
+static void eoifd_shutdown(struct work_struct *work)
+{
+	struct _eoifd *eoifd = container_of(work, struct _eoifd, shutdown);
+	struct kvm *kvm = eoifd->source->kvm;
+	u64 cnt;
+
+	/*
+	 * Stop EOI signaling
+	 */
+	kvm_unregister_irq_ack_notifier(kvm, &eoifd->notifier);
+
+	/*
+	 * Synchronize with the wait-queue and unhook ourselves to prevent
+	 * further events.
+	 */
+	eventfd_ctx_remove_wait_queue(eoifd->eventfd, &eoifd->wait, &cnt);
+
+	/*
+	 * Release resources
+	 */
+	eventfd_ctx_put(eoifd->eventfd);
+	_irq_source_put(eoifd->source);
+	kfree(eoifd);
+}
+
+/* assumes kvm->eoifds.lock is held */
+static bool eoifd_is_active(struct _eoifd *eoifd)
+{
+	return list_empty(&eoifd->list) ? false : true;
+}
+
+/*
+ * Mark the eoifd as inactive and schedule it for removal
+ *
+ * assumes kvm->eoifds.lock is held
+ */
+static void eoifd_deactivate(struct _eoifd *eoifd)
+{
+	BUG_ON(!eoifd_is_active(eoifd));
+
+	list_del_init(&eoifd->list);
+
+	queue_work(irqfd_cleanup_wq, &eoifd->shutdown);
+}
+
+/*
+ * Called with wqh->lock held and interrupts disabled
+ */
+static int eoifd_wakeup(wait_queue_t *wait, unsigned mode, int sync, void *key)
+{
+	unsigned long flags = (unsigned long)key;
+
+	if (unlikely(flags & POLLHUP)) {
+		/* The eventfd is closing, detach from KVM */
+		struct _eoifd *eoifd = container_of(wait, struct _eoifd, wait);
+		struct kvm *kvm = eoifd->source->kvm;
+		unsigned long flags;
+
+		spin_lock_irqsave(&kvm->eoifds.lock, flags);
+
+		/*
+		 * We must check if someone deactivated the eoifd before
+		 * we could acquire the eoifds.lock since the item is
+		 * deactivated from the KVM side before it is unhooked from
+		 * the wait-queue.  If it is already deactivated, we can
+		 * simply return knowing the other side will cleanup for us.
+		 * We cannot race against the eoifd going away since the
+		 * other side is required to acquire wqh->lock, which we hold
+		 */
+		if (eoifd_is_active(eoifd))
+			eoifd_deactivate(eoifd);
+
+		spin_unlock_irqrestore(&kvm->eoifds.lock, flags);
+	}
+
+	return 0;
+}
+
+static void eoifd_ptable_queue_proc(struct file *file, wait_queue_head_t *wqh,
+				    poll_table *pt)
+{
+	struct _eoifd *eoifd = container_of(pt, struct _eoifd, pt);
+	add_wait_queue(wqh, &eoifd->wait);
+}
+
+/*
+ * This function is called as the kvm VM fd is being released. Shutdown all
+ * eoifds that still remain open
+ */
+void kvm_eoifd_release(struct kvm *kvm)
+{
+	struct _eoifd *tmp, *eoifd;
+
+	spin_lock_irq(&kvm->eoifds.lock);
+
+	list_for_each_entry_safe(eoifd, tmp, &kvm->eoifds.items, list)
+		eoifd_deactivate(eoifd);
+
+	spin_unlock_irq(&kvm->eoifds.lock);
+
+	flush_workqueue(irqfd_cleanup_wq);
+}
+
+static void eoifd_event(struct kvm_irq_ack_notifier *notifier)
+{
+	struct _eoifd *eoifd;
+
+	eoifd = container_of(notifier, struct _eoifd, notifier);
+
+	if (unlikely(!eoifd->source))
+		return;
+
+	/*
+	 * De-assert and send EOI, user needs to re-assert if
+	 * device still requires service.
+	 */
+	kvm_set_irq(eoifd->source->kvm,
+		    eoifd->source->id, eoifd->source->gsi, 0);
+	eventfd_signal(eoifd->eventfd, 1);
+}
+
+static int kvm_assign_eoifd(struct kvm *kvm, struct kvm_eoifd *args)
+{
+	struct file *file = NULL;
+	struct eventfd_ctx *eventfd = NULL;
+	struct _eoifd *eoifd = NULL, *tmp;
+	struct _irq_source *source = NULL;
+	int ret;
+	u64 cnt;
+
+	if (!(args->flags & KVM_EOIFD_FLAG_LEVEL_IRQFD))
+		return -EINVAL;
+
+	file = eventfd_fget(args->fd);
+	if (IS_ERR(file)) {
+		ret = PTR_ERR(file);
+		goto fail;
+	}
+
+	eventfd = eventfd_ctx_fileget(file);
+	if (IS_ERR(eventfd)) {
+		ret = PTR_ERR(eventfd);
+		goto fail;
+	}
+
+	eoifd = kzalloc(sizeof(*eoifd), GFP_KERNEL);
+	if (!eoifd) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	source = _irq_source_get_from_key(kvm, args->key);
+	if (IS_ERR(source)) {
+		ret = PTR_ERR(source);
+		goto fail;
+	}
+
+	INIT_LIST_HEAD(&eoifd->list);
+	INIT_WORK(&eoifd->shutdown, eoifd_shutdown);
+	eoifd->eventfd = eventfd;
+	eoifd->notifier.gsi = source->gsi;
+	eoifd->notifier.irq_acked = eoifd_event;
+
+	/*
+	 * Install our own custom wake-up handling so we are notified via
+	 * a callback whenever someone releases the underlying eventfd
+	 */
+	init_waitqueue_func_entry(&eoifd->wait, eoifd_wakeup);
+	init_poll_funcptr(&eoifd->pt, eoifd_ptable_queue_proc);
+
+	/*
+	 * Clear out any previously released eoifds that might conflict
+	 */
+	flush_workqueue(irqfd_cleanup_wq);
+
+	/*
+	 * This can sleep, so register before acquiring spinlock, notifier
+	 * becomes a nop until we finish.
+	 */
+	kvm_register_irq_ack_notifier(kvm, &eoifd->notifier);
+
+	/*
+	 * Install the wait queue function to allow cleanup when the
+	 * eventfd is closed by the user.  This grabs the wqh lock, so
+	 * we do it out of spinlock, holding the file reference ensures
+	 * we won't see a POLLHUP until setup is complete.
+	 */
+	file->f_op->poll(file, &eoifd->pt);
+
+	spin_lock_irq(&kvm->eoifds.lock);
+
+	/*
+	 * Enforce a one-to-one relationship between irq source and eoifd so
+	 * that this interface can't be used to consume all kernel memory.
+	 * NB. single eventfd can still be used by multiple eoifds.
+	 */
+	list_for_each_entry(tmp, &kvm->eoifds.items, list) {
+		if (tmp->source == source) {
+			spin_unlock_irq(&kvm->eoifds.lock);
+			ret = -EBUSY;
+			goto fail_unregister;
+		}
+	}
+
+	list_add_tail(&eoifd->list, &kvm->eoifds.items);
+	eoifd->source = source; /* Enable ack notifier */
+
+	spin_unlock_irq(&kvm->eoifds.lock);
+
+	fput(file); /* Enable POLLHUP */
+
+	return 0;
+
+fail_unregister:
+	eventfd_ctx_remove_wait_queue(eventfd, &eoifd->wait, &cnt);
+	kvm_unregister_irq_ack_notifier(kvm, &eoifd->notifier);
+fail:
+	if (source && !IS_ERR(source))
+		_irq_source_put(source);
+
+	if (eventfd && !IS_ERR(eventfd))
+		eventfd_ctx_put(eventfd);
+
+	if (file && !IS_ERR(file))
+		fput(file);
+
+	kfree(eoifd);
+	return ret;
+}
+
+static int kvm_deassign_eoifd(struct kvm *kvm, struct kvm_eoifd *args)
+{
+	struct eventfd_ctx *eventfd = NULL;
+	struct _irq_source *source = NULL;
+	struct _eoifd *eoifd;
+	int ret = -ENOENT;
+
+	if (!(args->flags & KVM_EOIFD_FLAG_LEVEL_IRQFD))
+		return -EINVAL;
+
+	eventfd = eventfd_ctx_fdget(args->fd);
+	if (IS_ERR(eventfd)) {
+		ret = PTR_ERR(eventfd);
+		goto fail;
+	}
+
+	source = _irq_source_get_from_key(kvm, args->key);
+	if (IS_ERR(source)) {
+		ret = PTR_ERR(source);
+		goto fail;
+	}
+
+	spin_lock_irq(&kvm->eoifds.lock);
+
+	list_for_each_entry(eoifd, &kvm->eoifds.items, list) {
+		if (eoifd->eventfd == eventfd && eoifd->source == source) {
+			eoifd_deactivate(eoifd);
+			ret = 0;
+			break;
+		}
+	}
+
+	spin_unlock_irq(&kvm->eoifds.lock);
+
+fail:
+	if (source && !IS_ERR(source))
+		_irq_source_put(source);
+	if (eventfd && !IS_ERR(eventfd))
+		eventfd_ctx_put(eventfd);
+
+	/*
+	 * Block until we know all outstanding shutdown jobs have completed
+	 * so that we guarantee there will not be any more EOIs signaled on
+	 * this eventfd once this deassign function returns.
+	 */
+	flush_workqueue(irqfd_cleanup_wq);
+
+	return ret;
+}
+
+int kvm_eoifd(struct kvm *kvm, struct kvm_eoifd *args)
+{
+	if (args->flags & ~(KVM_EOIFD_FLAG_DEASSIGN |
+			    KVM_EOIFD_FLAG_LEVEL_IRQFD))
+		return -EINVAL;
+
+	if (args->flags & KVM_EOIFD_FLAG_DEASSIGN)
+		return kvm_deassign_eoifd(kvm, args);
+
+	return kvm_assign_eoifd(kvm, args);
 }

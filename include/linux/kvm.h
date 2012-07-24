@@ -619,6 +619,8 @@ struct kvm_ppc_smmu_info {
 #define KVM_CAP_S390_COW 79
 #define KVM_CAP_PPC_ALLOC_HTAB 80
 #define KVM_CAP_IRQFD_LEVEL 81
+#define KVM_CAP_EOIFD 82
+#define KVM_CAP_EOIFD_LEVEL_IRQFD 83
 
 #ifdef KVM_CAP_IRQ_ROUTING
 
@@ -692,6 +694,17 @@ struct kvm_irqfd {
 	__u32 gsi;
 	__u32 flags;
 	__u8  pad[20];
+};
+
+#define KVM_EOIFD_FLAG_DEASSIGN (1 << 0)
+/* Available with KVM_CAP_EOIFD_LEVEL_IRQFD */
+#define KVM_EOIFD_FLAG_LEVEL_IRQFD (1 << 1)
+
+struct kvm_eoifd {
+	__u32 fd;
+	__u32 flags;
+	__u32 key;
+	__u8 pad[20];
 };
 
 struct kvm_clock_data {
@@ -834,6 +847,8 @@ struct kvm_s390_ucas_mapping {
 #define KVM_PPC_GET_SMMU_INFO	  _IOR(KVMIO,  0xa6, struct kvm_ppc_smmu_info)
 /* Available with KVM_CAP_PPC_ALLOC_HTAB */
 #define KVM_PPC_ALLOCATE_HTAB	  _IOWR(KVMIO, 0xa7, __u32)
+/* Available with KVM_CAP_EOIFD */
+#define KVM_EOIFD                 _IOW(KVMIO,  0xa8, struct kvm_eoifd)
 
 /*
  * ioctls for vcpu fds
