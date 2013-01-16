@@ -147,6 +147,12 @@ struct vfio_device_info {
 	__u32	flags;
 #define VFIO_DEVICE_FLAGS_RESET	(1 << 0)	/* Device supports reset */
 #define VFIO_DEVICE_FLAGS_PCI	(1 << 1)	/* vfio-pci device */
+/* Legacy MMIO 0x0 - 0xfffff via VFIO_PCI_LEGACY_MMIO_REGION_INDEX */
+#define VFIO_DEVICE_FLAGS_PCI_LEGACY_MMIO	(1 << 2)
+/* Legacy I/O Port 0x0 - 0xffff via VFIO_PCI_LEGACY_IOPORT_REGION_INDEX */
+#define VFIO_DEVICE_FLAGS_PCI_LEGACY_IOPORT	(1 << 3)
+/* Supports VGA regions 0xa0000-0xbffff, 0x3b0-0x3bb, and 0x3c0-0x3df */
+#define VFIO_DEVICE_FLAGS_PCI_VGA		(1 << 4)
 	__u32	num_regions;	/* Max region index + 1 */
 	__u32	num_irqs;	/* Max IRQ index + 1 */
 };
@@ -303,6 +309,8 @@ enum {
 	VFIO_PCI_BAR5_REGION_INDEX,
 	VFIO_PCI_ROM_REGION_INDEX,
 	VFIO_PCI_CONFIG_REGION_INDEX,
+	VFIO_PCI_LEGACY_MMIO_REGION_INDEX,
+	VFIO_PCI_LEGACY_IOPORT_REGION_INDEX,
 	VFIO_PCI_NUM_REGIONS
 };
 

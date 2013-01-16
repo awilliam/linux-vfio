@@ -17,6 +17,7 @@
 #include <linux/pci.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/vgaarb.h>
 
 #include "vfio_pci_private.h"
 
@@ -173,4 +174,88 @@ ssize_t vfio_pci_bar_rw(struct vfio_pci_device *vdev, char __user *buf,
 		pci_unmap_rom(pdev, io);
 
 	return done;
+}
+
+ssize_t vfio_pci_legacy_mem_rw(struct vfio_pci_device *vdev, char __user *buf,
+			       size_t count, loff_t *ppos, bool iswrite)
+{
+	int ret;
+	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+
+	if (vdev->has_vga && pos >= 0xa0000 && pos < 0xc0000) {
+		void __iomem *mem;
+		size_t done;
+
+		count = min(count, (size_t)(0xc0000 - pos));
+
+		mem = ioremap_nocache(0xa0000, 0xc0000 - 0xa0000);
+		if (!mem)
+			return -ENOMEM;
+
+		ret = vga_get_interruptible(vdev->pdev, VGA_RSRC_LEGACY_MEM);
+		if (ret) {
+			iounmap(mem);
+			return ret;
+		}
+
+		done = do_io_rw(mem, buf, pos - 0xa0000, count, 0, 0, iswrite);
+
+		vga_put(vdev->pdev, VGA_RSRC_LEGACY_MEM);
+		iounmap(mem);
+
+		if (done >= 0)
+			*ppos += done;
+
+		return done;
+	}
+
+	return -EINVAL;
+}
+
+ssize_t vfio_pci_legacy_io_rw(struct vfio_pci_device *vdev, char __user *buf,
+			      size_t count, loff_t *ppos, bool iswrite)
+{
+	int ret;
+	loff_t pos = *ppos & VFIO_PCI_OFFSET_MASK;
+
+	if (vdev->has_vga &&
+	    ((pos >= 0x3b0 && pos < 0x3bc) || (pos >= 0x3c0 && pos < 0x3e0))) {
+		void __iomem *io = NULL;
+		loff_t off;
+		size_t done;
+
+		switch (pos) {
+		case 0x3b0 ... 0x3bb:
+			count = min(count, (size_t)(0x3bc - pos));
+			io = ioport_map(0x3b0, 0x3bc - 0x3b0);
+			off = pos - 0x3b0;
+			break;
+		case 0x3c0 ... 0x3df:
+			count = min(count, (size_t)(0x3e0 - pos));
+			io = ioport_map(0x3c0, 0x3e0 - 0x3c0);
+			off = pos - 0x3c0;
+			break;
+		}
+
+		if (!io)
+			return -ENOMEM;
+
+		ret = vga_get_interruptible(vdev->pdev, VGA_RSRC_LEGACY_IO);
+		if (ret) {
+			ioport_unmap(io);
+			return ret;
+		}
+
+		done = do_io_rw(io, buf, off, count, 0, 0, iswrite);
+
+		vga_put(vdev->pdev, VGA_RSRC_LEGACY_IO);
+		ioport_unmap(io);
+
+		if (done >= 0)
+			*ppos += done;
+
+		return done;
+	}
+
+	return -EINVAL;
 }

@@ -84,6 +84,11 @@ static int vfio_pci_enable(struct vfio_pci_device *vdev)
 	} else
 		vdev->msix_bar = 0xFF;
 
+#ifdef CONFIG_VFIO_PCI_VGA
+	if ((pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+		vdev->has_vga = true;
+#endif
+
 	return 0;
 }
 
@@ -209,6 +214,7 @@ static long vfio_pci_ioctl(void *device_data,
 
 	if (cmd == VFIO_DEVICE_GET_INFO) {
 		struct vfio_device_info info;
+		bool legacy_io = false, legacy_mem = false;
 
 		minsz = offsetofend(struct vfio_device_info, num_irqs);
 
@@ -223,8 +229,23 @@ static long vfio_pci_ioctl(void *device_data,
 		if (vdev->reset_works)
 			info.flags |= VFIO_DEVICE_FLAGS_RESET;
 
-		info.num_regions = VFIO_PCI_NUM_REGIONS;
+		info.num_regions = VFIO_PCI_CONFIG_REGION_INDEX + 1;
 		info.num_irqs = VFIO_PCI_NUM_IRQS;
+
+		if (vdev->has_vga) {
+			info.flags |= VFIO_DEVICE_FLAGS_PCI_VGA;
+			legacy_io = legacy_mem = true;
+		}
+
+		if (legacy_io) {
+			info.flags |= VFIO_DEVICE_FLAGS_PCI_LEGACY_IOPORT;
+			info.num_regions++;
+		}
+
+		if (legacy_mem) {
+			info.flags |= VFIO_DEVICE_FLAGS_PCI_LEGACY_MMIO;
+			info.num_regions++;
+		}
 
 		return copy_to_user((void __user *)arg, &info, minsz);
 
@@ -285,6 +306,26 @@ static long vfio_pci_ioctl(void *device_data,
 			info.flags = VFIO_REGION_INFO_FLAG_READ;
 			break;
 		}
+		case VFIO_PCI_LEGACY_MMIO_REGION_INDEX:
+			if (!vdev->has_vga)
+				return -EINVAL;
+
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = 1024 * 1024;
+			info.flags = VFIO_REGION_INFO_FLAG_READ |
+				     VFIO_REGION_INFO_FLAG_WRITE;
+
+			break;
+		case VFIO_PCI_LEGACY_IOPORT_REGION_INDEX:
+			if (!vdev->has_vga)
+				return -EINVAL;
+
+			info.offset = VFIO_PCI_INDEX_TO_OFFSET(info.index);
+			info.size = 64 * 1024;
+			info.flags = VFIO_REGION_INFO_FLAG_READ |
+				     VFIO_REGION_INFO_FLAG_WRITE;
+
+			break;
 		default:
 			return -EINVAL;
 		}
@@ -386,6 +427,12 @@ static ssize_t vfio_pci_rw(void *device_data, char __user *buf,
 
 	case VFIO_PCI_BAR0_REGION_INDEX ... VFIO_PCI_BAR5_REGION_INDEX:
 		return vfio_pci_bar_rw(vdev, buf, count, ppos, iswrite);
+
+	case VFIO_PCI_LEGACY_MMIO_REGION_INDEX:
+		return vfio_pci_legacy_mem_rw(vdev, buf, count, ppos, iswrite);
+
+	case VFIO_PCI_LEGACY_IOPORT_REGION_INDEX:
+		return vfio_pci_legacy_io_rw(vdev, buf, count, ppos, iswrite);
 	}
 
 	return -EINVAL;
