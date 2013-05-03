@@ -135,6 +135,14 @@ extern int __pci_hp_register(struct hotplug_slot *slot, struct pci_bus *pbus,
 extern int pci_hp_deregister(struct hotplug_slot *slot);
 extern int __must_check pci_hp_change_slot_info	(struct hotplug_slot *slot,
 						 struct hotplug_slot_info *info);
+#ifdef CONFIG_HOTPLUG_PCI
+int pci_hp_reset_slot(struct hotplug_slot *slot, int probe);
+#else
+static inline int pci_hp_reset_slot(struct hotplug_slot *slot, int probe)
+{
+	return -ENOTTY;
+}
+#endif
 
 /* use a define to avoid include chaining to get THIS_MODULE & friends */
 #define pci_hp_register(slot, pbus, devnr, name) \

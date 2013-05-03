@@ -537,6 +537,29 @@ int __must_check pci_hp_change_slot_info(struct hotplug_slot *hotplug,
 	return 0;
 }
 
+/**
+ * pci_hp_reset_slot - reset slot
+ *
+ * @hotplug: pointer to hotplug slot to reset
+ * @probe: reset slot (0) or just probe
+ *
+ * Returns 0 if successful, anything else for an error.
+ */
+int pci_hp_reset_slot(struct hotplug_slot *hotplug, int probe)
+{
+	int result = -ENOTTY;
+
+	if (!hotplug || !try_module_get(hotplug->ops->owner))
+		return result;
+
+	if (hotplug->ops->reset_slot)
+		result = hotplug->ops->reset_slot(hotplug, probe);
+
+	module_put(hotplug->ops->owner);
+
+	return result;
+}
+
 static int __init pci_hotplug_init (void)
 {
 	int result;
@@ -570,3 +593,4 @@ MODULE_PARM_DESC(debug, "Debugging mode enabled or not");
 EXPORT_SYMBOL_GPL(__pci_hp_register);
 EXPORT_SYMBOL_GPL(pci_hp_deregister);
 EXPORT_SYMBOL_GPL(pci_hp_change_slot_info);
+EXPORT_SYMBOL_GPL(pci_hp_reset_slot);
