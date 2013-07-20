@@ -60,6 +60,9 @@
  */
 #define VFIO_CHECK_EXTENSION		_IO(VFIO_TYPE, VFIO_BASE + 1)
 
+/* Support for VFIO_DEVICE_PCI_BUS_RESET */
+#define VFIO_CAP_DEVICE_PCI_BUS_RESET 1
+
 /**
  * VFIO_SET_IOMMU - _IOW(VFIO_TYPE, VFIO_BASE + 2, __s32)
  *
@@ -323,6 +326,17 @@ enum {
 	VFIO_PCI_ERR_IRQ_INDEX,
 	VFIO_PCI_NUM_IRQS
 };
+
+/* VFIO-PCI defines the following VFIO-PCI specific device ioctl(s) */
+
+/**
+ * VFIO_DEVICE_PCI_BUS_RESET - _IO(VFIO_TYPE, VFIO_BASE + 12)
+ *
+ * Reset the PCI slot/bus of the device.  If available, a slot reset
+ * will be used instead of a bus reset.  All of the devices in or below
+ * the slot/bus will be reset and MUST be attached to the same container.
+ */
+#define VFIO_DEVICE_PCI_BUS_RESET	_IO(VFIO_TYPE, VFIO_BASE + 12)
 
 /* -------- API for Type1 VFIO IOMMU -------- */
 

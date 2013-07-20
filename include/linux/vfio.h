@@ -49,6 +49,11 @@ extern struct vfio_device *vfio_device_get_from_dev(struct device *dev);
 extern void vfio_device_put(struct vfio_device *device);
 extern void *vfio_device_data(struct vfio_device *device);
 
+extern struct vfio_container *vfio_container_lock_from_dev(struct device *dev);
+extern bool vfio_container_includes_locked(struct vfio_container *container,
+					   struct device *dev);
+extern void vfio_container_unlock(struct vfio_container *container);
+
 /**
  * struct vfio_iommu_driver_ops - VFIO IOMMU driver callbacks
  */

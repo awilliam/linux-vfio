@@ -208,6 +208,62 @@ static int vfio_pci_get_irq_count(struct vfio_pci_device *vdev, int irq_type)
 	return 0;
 }
 
+static bool vfio_pci_bus_contained(struct vfio_container *container,
+				   struct pci_bus *bus)
+{
+	struct pci_dev *pdev;
+
+	list_for_each_entry(pdev, &bus->devices, bus_list)
+		if (!vfio_container_includes_locked(container, &pdev->dev) ||
+		    (pdev->subordinate &&
+		     !vfio_pci_bus_contained(container, pdev->subordinate)))
+			return false;
+
+	return true;
+}
+
+static bool vfio_pci_slot_contained(struct vfio_container *container,
+				    struct pci_slot *slot)
+{
+	struct pci_dev *pdev;
+
+	list_for_each_entry(pdev, &slot->bus->devices, bus_list) {
+		if (!pdev->slot || pdev->slot != slot)
+			continue;
+
+		if (!vfio_container_includes_locked(container, &pdev->dev) ||
+		    (pdev->subordinate &&
+		     !vfio_pci_bus_contained(container, pdev->subordinate)))
+			return false;
+	}
+
+	return true;
+}
+
+static long vfio_pci_reset_bus(struct vfio_pci_device *vdev)
+{
+	struct vfio_container *container;
+	long ret = -EBUSY;
+
+	container = vfio_container_lock_from_dev(&vdev->pdev->dev);
+	if (IS_ERR(container))
+		return PTR_ERR(container);
+
+	if (vdev->pdev->slot &&
+	    vfio_pci_slot_contained(container, vdev->pdev->slot)) {
+		ret = pci_reset_slot(vdev->pdev->slot);
+		if (!ret)
+			goto out;
+	}
+
+	if (vfio_pci_bus_contained(container, vdev->pdev->bus))
+		ret = pci_reset_bus(vdev->pdev->bus);
+out:
+	vfio_container_unlock(container);
+
+	return ret;
+}
+
 static long vfio_pci_ioctl(void *device_data,
 			   unsigned int cmd, unsigned long arg)
 {
@@ -391,6 +447,8 @@ static long vfio_pci_ioctl(void *device_data,
 	} else if (cmd == VFIO_DEVICE_RESET)
 		return vdev->reset_works ?
 			pci_reset_function(vdev->pdev) : -EINVAL;
+	else if (cmd == VFIO_DEVICE_PCI_BUS_RESET)
+		return vfio_pci_reset_bus(vdev);
 
 	return -ENOTTY;
 }

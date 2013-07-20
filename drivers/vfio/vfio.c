@@ -715,7 +715,11 @@ static long vfio_ioctl_check_extension(struct vfio_container *container,
 	driver = container->iommu_driver;
 
 	switch (arg) {
-		/* No base extensions yet */
+#ifdef CONFIG_VFIO_PCI
+		case VFIO_CAP_DEVICE_PCI_BUS_RESET:
+			ret = 1;
+			break;
+#endif
 	default:
 		/*
 		 * If no driver is set, poll all registered drivers for
@@ -1368,6 +1372,48 @@ static const struct file_operations vfio_device_fops = {
 #endif
 	.mmap		= vfio_device_fops_mmap,
 };
+
+struct vfio_container *vfio_container_lock_from_dev(struct device *dev)
+{
+	struct vfio_device *device = vfio_device_get_from_dev(dev);
+	struct vfio_group *group = device->group;
+	struct vfio_container *container = group->container;
+
+	down_read(&container->group_lock);
+
+	return container;
+}
+EXPORT_SYMBOL_GPL(vfio_container_lock_from_dev);
+
+bool vfio_container_includes_locked(struct vfio_container *container,
+				    struct device *dev)
+{
+	struct iommu_group *iommu_group;
+	struct vfio_group *group;
+	bool ret = false;
+
+	iommu_group = iommu_group_get(dev);
+	if (!iommu_group)
+		return ret;
+
+	list_for_each_entry(group, &container->group_list, container_next) {
+		if (group->iommu_group == iommu_group) {
+			ret = true;
+			break;
+		}
+	}
+
+	iommu_group_put(iommu_group);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(vfio_container_includes_locked);
+
+void vfio_container_unlock(struct vfio_container *container)
+{
+	up_read(&container->group_lock);
+}
+EXPORT_SYMBOL_GPL(vfio_container_unlock);
 
 /**
  * Module/class support
