@@ -99,9 +99,9 @@ static u16 pci_ext_cap_length[] = {
 	[PCI_EXT_CAP_ID_DPA]	=	0xFF,
 	[PCI_EXT_CAP_ID_TPH]	=	0xFF,
 	[PCI_EXT_CAP_ID_LTR]	=	PCI_EXT_CAP_LTR_SIZEOF,
-	[PCI_EXT_CAP_ID_SECPCI]	=	0,	/* not yet */
+	[PCI_EXT_CAP_ID_SECPCI]	=	0xFF,
 	[PCI_EXT_CAP_ID_PMUX]	=	0,	/* not yet */
-	[PCI_EXT_CAP_ID_PASID]	=	0,	/* not yet */
+	[PCI_EXT_CAP_ID_PASID]	=	PCI_EXT_CAP_PASID_SIZEOF,
 };
 
 /*
@@ -778,6 +778,60 @@ static int __init init_pci_ext_cap_pwr_perm(struct perm_bits *perm)
 	return 0;
 }
 
+/* Permissions for Address Translation Services extended capability */
+static int __init init_pci_ext_cap_ats_perm(struct perm_bits *perm)
+{
+	u16 mask;
+
+	if (alloc_perm_bits(perm, pci_ext_cap_length[PCI_EXT_CAP_ID_ATS]))
+		return -ENOMEM;
+
+	p_setd(perm, 0, ALL_VIRT, NO_WRITE);
+
+	mask = PCI_ATS_CTRL_ENABLE |		/* Enable ATS */
+	       PCI_ATS_CTRL_STU(0xffff);	/* Smallest translatin unit */
+
+	p_setw(perm, PCI_ATS_CTRL, NO_VIRT, mask);
+
+	return 0;
+}
+
+/* Permissions for Page Request Interface extended capability */
+static int __init init_pci_ext_cap_pri_perm(struct perm_bits *perm)
+{
+	if (alloc_perm_bits(perm, pci_ext_cap_length[PCI_EXT_CAP_ID_PRI]))
+		return -ENOMEM;
+
+	p_setd(perm, 0, ALL_VIRT, NO_WRITE);
+
+	p_setw(perm, PCI_PRI_CTRL, NO_VIRT,
+	       PCI_PRI_CTRL_ENABLE | PCI_PRI_CTRL_RESET);
+	p_setw(perm, PCI_PRI_STATUS, NO_VIRT,
+	       PCI_PRI_STATUS_RF | PCI_PRI_STATUS_UPRGI);
+	p_setd(perm, PCI_PRI_ALLOC_REQ, NO_VIRT, ALL_WRITE);
+
+	return 0;
+}
+
+/* Permissions for Process Address Space ID extended capability */
+static int __init init_pci_ext_cap_pasid_perm(struct perm_bits *perm)
+{
+	u16 mask;
+
+	if (alloc_perm_bits(perm, pci_ext_cap_length[PCI_EXT_CAP_ID_PASID]))
+		return -ENOMEM;
+
+	p_setd(perm, 0, ALL_VIRT, NO_WRITE);
+
+	mask = PCI_PASID_CTRL_ENABLE |		/* Enable PASID */
+	       PCI_PASID_CTRL_EXEC |		/* Enable exec permission */
+	       PCI_PASID_CTRL_PRIV;		/* Enable privledged mode */
+
+	p_setw(perm, PCI_PASID_CTRL, NO_VIRT, mask);
+
+	return 0;
+}
+
 /*
  * Initialize the shared permission tables
  */
@@ -812,6 +866,9 @@ int __init vfio_pci_init_perm_bits(void)
 	/* Extended capabilities */
 	ret |= init_pci_ext_cap_err_perm(&ecap_perms[PCI_EXT_CAP_ID_ERR]);
 	ret |= init_pci_ext_cap_pwr_perm(&ecap_perms[PCI_EXT_CAP_ID_PWR]);
+	ret |= init_pci_ext_cap_ats_perm(&ecap_perms[PCI_EXT_CAP_ID_ATS]);
+	ret |= init_pci_ext_cap_pri_perm(&ecap_perms[PCI_EXT_CAP_ID_PRI]);
+	ret |= init_pci_ext_cap_pasid_perm(&ecap_perms[PCI_EXT_CAP_ID_PASID]);
 	ecap_perms[PCI_EXT_CAP_ID_VNDR].writefn = vfio_raw_config_write;
 
 	if (ret)
@@ -1136,6 +1193,12 @@ static int vfio_ext_cap_len(struct vfio_pci_device *vdev, u16 ecap, u16 epos)
 			return PCI_TPH_BASE_SIZEOF + round_up(sts * 2, 4);
 		}
 		return PCI_TPH_BASE_SIZEOF;
+	case PCI_EXT_CAP_ID_SECPCI:
+		ret = pcie_capability_read_dword(pdev, PCI_EXP_LNKCAP, &dword);
+		if (ret)
+			return ret;
+
+		return 0xc + ((dword & PCI_EXP_LNKCAP_MLW) >> 4) * 2;
 	default:
 		pr_warn("%s: %s unknown length for pci ecap 0x%x@0x%x\n",
 			dev_name(&pdev->dev), __func__, ecap, epos);
