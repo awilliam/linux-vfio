@@ -1147,10 +1147,16 @@ int ahci_host_activate(struct ata_host *host, int irq, unsigned int n_msis)
 
 	for (i = 0; i < host->n_ports; i++) {
 		struct ahci_port_priv *pp = host->ports[i]->private_data;
+               const char *desc;
+
+               if (ata_port_is_dummy(host->ports[i]))
+                       desc = dev_driver_string(host->dev);
+               else
+                       desc = pp->irq_desc;
 
 		rc = devm_request_threaded_irq(host->dev,
 			irq + i, ahci_hw_interrupt, ahci_thread_fn, IRQF_SHARED,
-			pp->irq_desc, host->ports[i]);
+			desc, host->ports[i]);
 		if (rc)
 			goto out_free_irqs;
 	}
