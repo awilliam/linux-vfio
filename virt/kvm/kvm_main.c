@@ -572,6 +572,7 @@ static void kvm_destroy_devices(struct kvm *kvm)
 
 		list_del(node);
 		dev->ops->destroy(dev);
+		kfree(dev);
 	}
 }
 
@@ -2231,6 +2232,9 @@ static int kvm_device_release(struct inode *inode, struct file *filp)
 	struct kvm_device *dev = filp->private_data;
 	struct kvm *kvm = dev->kvm;
 
+	list_del(&dev->vm_node);
+	dev->ops->destroy(dev);
+	kfree(dev);
 	kvm_put_kvm(kvm);
 	return 0;
 }
@@ -2294,6 +2298,7 @@ static int kvm_ioctl_create_device(struct kvm *kvm,
 	ret = anon_inode_getfd(ops->name, &kvm_device_fops, dev, O_RDWR | O_CLOEXEC);
 	if (ret < 0) {
 		ops->destroy(dev);
+		kfree(dev);
 		return ret;
 	}
 

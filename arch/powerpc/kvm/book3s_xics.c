@@ -1220,7 +1220,6 @@ static void kvmppc_xics_free(struct kvm_device *dev)
 	for (i = 0; i <= xics->max_icsid; i++)
 		kfree(xics->ics[i]);
 	kfree(xics);
-	kfree(dev);
 }
 
 static int kvmppc_xics_create(struct kvm_device *dev, u32 type)
