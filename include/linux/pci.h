@@ -1800,6 +1800,7 @@ static inline struct eeh_dev *pci_dev_to_eeh_dev(struct pci_dev *pdev)
 int pci_for_each_dma_alias(struct pci_dev *pdev,
 			   int (*fn)(struct pci_dev *pdev,
 				     u16 alias, void *data), void *data);
+struct pci_dev *pci_find_dma_isolation_root(struct pci_dev *pdev);
 
 /**
  * pci_find_upstream_pcie_bridge - find upstream PCIe-to-PCI bridge of a device

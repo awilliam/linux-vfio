@@ -109,6 +109,136 @@ int pci_for_each_dma_alias(struct pci_dev *pdev,
 }
 
 /*
+ * last_dma_alias_dev - Isolation root helper to record the last DMA alias pdev
+ */
+static int last_dma_alias_dev(struct pci_dev *pdev, u16 alias, void *data)
+{
+	*(struct pci_dev **)data = pdev;
+	return 0;
+}
+
+/*
+ * To consider a device isolated, we require ACS to support Source Validation,
+ * Request Redirection, Completer Redirection, and Upstream Forwarding.  This
+ * effectively means that devices cannot spoof their requester ID, requests
+ * and commpletions cannot be redirected, and all transactions are forwarded
+ * upstream, even as it passes through a bridge where the target device is
+ * downstream.
+ */
+#define REQ_ACS_FLAGS   (PCI_ACS_SV | PCI_ACS_RR | PCI_ACS_CR | PCI_ACS_UF)
+
+/*
+ * pci_find_dma_isolation_root - Given a PCI device, find the root device for
+ *				 an isolation domain.
+ * @pdev: target device
+ *
+ * This function takes DMA alias quirks, bus topology, and PCI ACS into
+ * account to find the root device for an isolation domain.  The root device
+ * is a consistent and representative device within the isolation domain.
+ * Passing any device within a given isolation domain results in the same
+ * returned root device, allowing this root device to be used for lookup
+ * for structures like IOMMU groups.  Note that the root device is not
+ * necessarily a bridge, in the case of a multifunction device without
+ * DMA isolation between functions, the root device is the lowest function
+ * without isolation.
+ */
+struct pci_dev *pci_find_dma_isolation_root(struct pci_dev *pdev)
+{
+	struct pci_bus *bus;
+
+	/*
+	 * Step 1: Find the upstream DMA alias device
+	 *
+	 * A device can be aliased by bridges or DMA alias quirks.  Being able
+	 * to differentiate devices is a minimum requirement for isolation.
+	 */
+	pci_for_each_dma_alias(pdev, &last_dma_alias_dev, &pdev);
+
+	/*
+	 * Step 2: Find the upstream ACS device
+	 *
+	 * Beyond differentiation, ACS prevents uncontrolled peer-to-peer
+	 * transactions.  Therefore the next step is to find the upstream
+	 * ACS device.
+	 */
+	for (bus = pdev->bus; !pci_is_root_bus(bus); bus = bus->parent) {
+		if (!bus->self)
+			continue;
+
+		if (pci_acs_path_enabled(bus->self, NULL, REQ_ACS_FLAGS))
+			break;
+
+		pdev = bus->self;
+	}
+
+	/*
+	 * Step 3: Handle DMA function aliases
+	 *
+	 * PCI functions are sometimes broken and use the wrong requester
+	 * ID for DMA transactions.  The requester ID for this device may
+	 * actually be used by another function in this slot.  If such a
+	 * function exists, use it.
+	 */
+	if (pdev->multifunction) {
+		u8 func, func_mask = 1 << PCI_FUNC(pdev->devfn);
+
+		for (func = 0; func < 8; func++) {
+			struct pci_dev *tmp;
+
+			if (func == PCI_FUNC(pdev->devfn))
+				continue;
+
+			tmp = pci_get_slot(pdev->bus,
+					   PCI_DEVFN(PCI_SLOT(pdev->devfn),
+						     func));
+			if (!tmp)
+				continue;
+
+			pci_dev_put(tmp);
+			/*
+			 * If this device has a DMA alias to us, it becomes
+			 * the base device regardless of ACS.
+			 */
+			if (tmp->dma_func_alias & func_mask) {
+				pdev = tmp;
+				break;
+			}
+		}
+	}
+
+	/*
+	 * Step 4: Handle multifunction ACS
+	 *
+	 * If the resulting device is multifunction and does not itself
+	 * support ACS then we cannot assume isolation between functions.
+	 * The root device needs to be consistent, therefore we return the
+	 * lowest numbered function that also lacks ACS support.
+	 */
+	if (pdev->multifunction && !pci_acs_enabled(pdev, REQ_ACS_FLAGS)) {
+		u8 func;
+
+		for (func = 0; func < PCI_FUNC(pdev->devfn); func++) {
+			struct pci_dev *tmp;
+
+			tmp = pci_get_slot(pdev->bus,
+					   PCI_DEVFN(PCI_SLOT(pdev->devfn),
+						     func));
+			if (!tmp)
+				continue;
+
+			pci_dev_put(tmp);
+
+			if (!pci_acs_enabled(tmp, REQ_ACS_FLAGS)) {
+				pdev = tmp;
+				break;
+			}
+		}
+	}
+
+	return pdev;
+}
+
+/*
  * find the upstream PCIe-to-PCI bridge of a PCI device
  * if the device is PCIE, return NULL
  * if the device isn't connected to a PCIe bridge (that is its parent is a
