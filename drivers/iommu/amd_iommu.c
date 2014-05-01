@@ -294,6 +294,7 @@ static int iommu_init_device(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct iommu_dev_data *dev_data;
 	u16 alias;
+	u8 func_alias;
 	int ret;
 
 	if (dev->archdata.iommu)
@@ -304,6 +305,19 @@ static int iommu_init_device(struct device *dev)
 		return -ENOMEM;
 
 	alias = amd_iommu_alias_table[dev_data->devid];
+
+	/*
+	 * If there is no platform provided alias (topology-based) check
+	 * if we have a device quirk based alias.
+	 */
+	func_alias = pdev->dma_func_alias & ~(1 << PCI_SLOT(pdev->devfn));
+	if (func_alias && alias == dev_data->devid) {
+		WARN_ON(hweight8(func_alias) > 1);
+		alias = PCI_DEVID(pdev->bus->number,
+				  PCI_DEVFN(PCI_SLOT(pdev->devfn),
+					    ffs(func_alias) - 1));
+	}
+
 	if (alias != dev_data->devid) {
 		struct iommu_dev_data *alias_data;
 
@@ -351,12 +365,19 @@ static void iommu_ignore_device(struct device *dev)
 
 static void iommu_uninit_device(struct device *dev)
 {
+	struct iommu_dev_data *dev_data = search_dev_data(get_device_id(dev));
+
+	if (!dev_data)
+		return;
+
 	iommu_group_remove_device(dev);
 
+	/* Unlink from alias, it may change if another device is re-plugged */
+	dev_data->alias_data = NULL;
+
 	/*
-	 * Nothing to do here - we keep dev_data around for unplugged devices
-	 * and reuse it when the device is re-plugged - not doing so would
-	 * introduce a ton of races.
+	 * We keep dev_data around for unplugged devices and reuse it when the
+	 * device is re-plugged - not doing so would introduce a ton of races.
 	 */
 }
 
