@@ -3377,6 +3377,7 @@ static void quirk_use_pcie_bridge_dma_alias(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ASMEDIA, 0x1080,
 			 quirk_use_pcie_bridge_dma_alias);
+DECLARE_PCI_FIXUP_HEADER(0x10e3, 0x8113, quirk_use_pcie_bridge_dma_alias);
 
 /*
  * AMD has indicated that the devices below do not support peer-to-peer
