@@ -3371,6 +3371,13 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_JMICRON,
 			 PCI_DEVICE_ID_JMICRON_JMB388_ESD,
 			 quirk_dma_func1_alias);
 
+static void quirk_use_pcie_bridge_dma_alias(struct pci_dev *pdev)
+{
+	pdev->dev_flags |= PCI_DEV_FLAG_PCIE_BRIDGE_ALIAS;
+}
+DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_ASMEDIA, 0x1080,
+			 quirk_use_pcie_bridge_dma_alias);
+
 /*
  * AMD has indicated that the devices below do not support peer-to-peer
  * in any system where they are found in the southbridge with an AMD
