@@ -37,6 +37,27 @@ int pci_for_each_dma_alias(struct pci_dev *pdev,
 	if (ret)
 		return ret;
 
+	/*
+	 * dma_func_alias provides a bitmap of other function numbers on
+	 * this same PCI slot to use as DMA aliases.
+	 */
+	if (unlikely(pdev->dma_func_alias)) {
+		u8 map = pdev->dma_func_alias & ~(1 << PCI_FUNC(pdev->devfn));
+		int func;
+
+		for (func = 0; map && func < 8; func++, map >>= 1) {
+			if (!(map & 1))
+				continue;
+
+			ret = fn(pdev,
+				 PCI_DEVID(pdev->bus->number,
+					   PCI_DEVFN(PCI_SLOT(pdev->devfn),
+					   func)), data);
+			if (ret)
+				return ret;
+		}
+	}
+
 	for (bus = pdev->bus; !pci_is_root_bus(bus); bus = bus->parent) {
 		struct pci_dev *tmp;
 
