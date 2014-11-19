@@ -3008,6 +3008,22 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_REALTEK, 0x8169,
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_MELLANOX, PCI_ANY_ID,
 			 quirk_broken_intx_masking);
 
+static void quirk_no_pm_reset(struct pci_dev *dev)
+{
+	dev->dev_flags |= PCI_DEV_FLAGS_NO_PM_RESET;
+}
+
+/*
+ * Some AMD/ATI GPUS (HD8570 - Oland) report supporting PM reset via D3->D0
+ * transition (NoSoftRst-).  This reset mechanims seems to have no effect
+ * whatsoever on the device, even retaining the framebuffer contents and
+ * monitor sync.  Advertising this support makes other layers, like VFIO
+ * assume pci_reset_function() is viable for this device.  Mark it as
+ * unavailable to skip it when testing reset methods.
+ */
+DECLARE_PCI_FIXUP_CLASS_HEADER(PCI_VENDOR_ID_ATI, PCI_ANY_ID,
+			       PCI_CLASS_DISPLAY_VGA, 0, quirk_no_pm_reset);
+
 #ifdef CONFIG_ACPI
 /*
  * Apple: Shutdown Cactus Ridge Thunderbolt controller.
