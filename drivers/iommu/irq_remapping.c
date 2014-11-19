@@ -160,6 +160,11 @@ static void eoi_ioapic_pin_remapped(int apic, int pin, int vector)
 	io_apic_eoi(apic, pin);
 }
 
+static bool remapped_multivector_msi(struct pci_dev *dev)
+{
+	return true;
+}
+
 static void __init irq_remapping_modify_x86_ops(void)
 {
 	x86_io_apic_ops.disable		= irq_remapping_disable_io_apic;
@@ -169,6 +174,7 @@ static void __init irq_remapping_modify_x86_ops(void)
 	x86_msi.setup_msi_irqs		= irq_remapping_setup_msi_irqs;
 	x86_msi.setup_hpet_msi		= setup_hpet_msi_remapped;
 	x86_msi.compose_msi_msg		= compose_remapped_msi_msg;
+	x86_msi.multivector_msi		= remapped_multivector_msi;
 }
 
 static __init int setup_nointremap(char *str)

@@ -185,6 +185,7 @@ struct x86_msi_ops {
 	int  (*setup_hpet_msi)(unsigned int irq, unsigned int id);
 	u32 (*msi_mask_irq)(struct msi_desc *desc, u32 mask, u32 flag);
 	u32 (*msix_mask_irq)(struct msi_desc *desc, u32 flag);
+	bool (*multivector_msi)(struct pci_dev *dev);
 };
 
 struct IO_APIC_route_entry;

@@ -79,6 +79,11 @@ int __weak arch_setup_msi_irqs(struct pci_dev *dev, int nvec, int type)
 	return 0;
 }
 
+bool __weak arch_supports_multivector_msi(struct pci_dev *dev)
+{
+	return false;
+}
+
 /*
  * We have a default implementation available as a separate non-weak
  * function, as it is used by the Xen x86 PCI code
@@ -788,12 +793,13 @@ out_free:
  * pci_msi_supported - check whether MSI may be enabled on a device
  * @dev: pointer to the pci_dev data structure of MSI device function
  * @nvec: how many MSIs have been requested ?
+ * @type: PCI_CAP_ID_MSI or PCI_CAP_ID_MSIX
  *
  * Look at global flags, the device itself, and its parent buses
  * to determine if MSI/-X are supported for the device. If MSI/-X is
  * supported return 1, else return 0.
  **/
-static int pci_msi_supported(struct pci_dev *dev, int nvec)
+int pci_msi_supported(struct pci_dev *dev, int nvec, int type)
 {
 	struct pci_bus *bus;
 
@@ -802,6 +808,9 @@ static int pci_msi_supported(struct pci_dev *dev, int nvec)
 		return 0;
 
 	if (!dev || dev->no_msi || dev->current_state != PCI_D0)
+		return 0;
+
+	if (type != PCI_CAP_ID_MSI && type != PCI_CAP_ID_MSIX)
 		return 0;
 
 	/*
@@ -823,8 +832,13 @@ static int pci_msi_supported(struct pci_dev *dev, int nvec)
 		if (bus->bus_flags & PCI_BUS_FLAGS_NO_MSI)
 			return 0;
 
+	if (type == PCI_CAP_ID_MSI && nvec > 1 &&
+	    !arch_supports_multivector_msi(dev))
+		return 0;
+
 	return 1;
 }
+EXPORT_SYMBOL(pci_msi_supported);
 
 /**
  * pci_msi_vec_count - Return the number of MSI vectors a device can send
@@ -925,7 +939,7 @@ int pci_enable_msix(struct pci_dev *dev, struct msix_entry *entries, int nvec)
 	int nr_entries;
 	int i, j;
 
-	if (!pci_msi_supported(dev, nvec))
+	if (!pci_msi_supported(dev, nvec, PCI_CAP_ID_MSIX))
 		return -EINVAL;
 
 	if (!entries)
@@ -1036,7 +1050,7 @@ int pci_enable_msi_range(struct pci_dev *dev, int minvec, int maxvec)
 	int nvec;
 	int rc;
 
-	if (!pci_msi_supported(dev, minvec))
+	if (!pci_msi_supported(dev, minvec, PCI_CAP_ID_MSI))
 		return -EINVAL;
 
 	WARN_ON(!!dev->msi_enabled);

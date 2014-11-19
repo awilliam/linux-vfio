@@ -148,6 +148,13 @@ u32 arch_msix_mask_irq(struct msi_desc *desc, u32 flag)
 {
 	return x86_msi.msix_mask_irq(desc, flag);
 }
+
+bool arch_supports_multivector_msi(struct pci_dev *dev)
+{
+	if (!x86_msi.multivector_msi)
+		return false;
+	return x86_msi.multivector_msi(dev);
+}
 #endif
 
 struct x86_io_apic_ops x86_io_apic_ops = {

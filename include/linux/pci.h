@@ -1197,6 +1197,7 @@ struct msix_entry {
 
 
 #ifdef CONFIG_PCI_MSI
+int pci_msi_supported(struct pci_dev *dev, int nvec, int type);
 int pci_msi_vec_count(struct pci_dev *dev);
 void pci_msi_shutdown(struct pci_dev *dev);
 void pci_disable_msi(struct pci_dev *dev);
@@ -1225,6 +1226,8 @@ static inline int pci_enable_msix_exact(struct pci_dev *dev,
 	return 0;
 }
 #else
+static inline int pci_msi_supported(struct pci_dev *dev, int nvec, int type)
+{ return 0; }
 static inline int pci_msi_vec_count(struct pci_dev *dev) { return -ENOSYS; }
 static inline void pci_msi_shutdown(struct pci_dev *dev) { }
 static inline void pci_disable_msi(struct pci_dev *dev) { }
