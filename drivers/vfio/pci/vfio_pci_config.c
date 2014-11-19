@@ -1181,6 +1181,16 @@ static int vfio_cap_init(struct vfio_pci_device *vdev)
 			continue;
 		}
 
+		if ((cap == PCI_CAP_ID_MSI ||
+		     cap == PCI_CAP_ID_MSIX) && !pci_msi_enabled()) {
+			pr_warn("%s: %s MSI disabled in kernel, hiding MSI%s capability\n",
+				__func__, dev_name(&pdev->dev),
+				cap == PCI_CAP_ID_MSIX ? "-X" : "");
+			*prev = next;
+			pos = next;
+			continue;
+		}
+
 		/* Sanity check, do we overlap other capabilities? */
 		for (i = 0; i < len; i++) {
 			if (likely(map[pos + i] == PCI_CAP_ID_INVALID))

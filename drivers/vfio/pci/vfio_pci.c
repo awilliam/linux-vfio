@@ -223,7 +223,7 @@ static int vfio_pci_get_irq_count(struct vfio_pci_device *vdev, int irq_type)
 		u16 flags;
 
 		pos = vdev->pdev->msi_cap;
-		if (pos) {
+		if (pci_msi_enabled() && pos) {
 			flags = vdev->vconfig[pos + PCI_MSI_FLAGS];
 			return 1 << ((flags & PCI_MSI_FLAGS_QMASK) >> 1);
 		}
@@ -232,7 +232,7 @@ static int vfio_pci_get_irq_count(struct vfio_pci_device *vdev, int irq_type)
 		u16 flags;
 
 		pos = vdev->pdev->msix_cap;
-		if (pos) {
+		if (pci_msi_enabled() && pos) {
 			pci_read_config_word(vdev->pdev,
 					     pos + PCI_MSIX_FLAGS, &flags);
 
