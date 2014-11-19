@@ -505,14 +505,6 @@ static int vfio_msi_enable(struct vfio_pci_device *vdev, int nvec, bool msix)
 	vdev->irq_type = msix ? VFIO_PCI_MSIX_IRQ_INDEX :
 				VFIO_PCI_MSI_IRQ_INDEX;
 
-	if (!msix) {
-		/*
-		 * Compute the virtual hardware field for max msi vectors -
-		 * it is the log base 2 of the number of vectors.
-		 */
-		vdev->msi_qmax = fls(nvec * 2 - 1) - 1;
-	}
-
 	return 0;
 }
 

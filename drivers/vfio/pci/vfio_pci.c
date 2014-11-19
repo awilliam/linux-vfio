@@ -224,8 +224,7 @@ static int vfio_pci_get_irq_count(struct vfio_pci_device *vdev, int irq_type)
 
 		pos = vdev->pdev->msi_cap;
 		if (pos) {
-			pci_read_config_word(vdev->pdev,
-					     pos + PCI_MSI_FLAGS, &flags);
+			flags = vdev->vconfig[pos + PCI_MSI_FLAGS];
 			return 1 << ((flags & PCI_MSI_FLAGS_QMASK) >> 1);
 		}
 	} else if (irq_type == VFIO_PCI_MSIX_IRQ_INDEX) {

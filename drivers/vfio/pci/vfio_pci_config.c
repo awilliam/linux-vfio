@@ -837,68 +837,6 @@ static int vfio_find_cap_start(struct vfio_pci_device *vdev, int pos)
 	return pos;
 }
 
-static int vfio_msi_config_read(struct vfio_pci_device *vdev, int pos,
-				int count, struct perm_bits *perm,
-				int offset, __le32 *val)
-{
-	/* Update max available queue size from msi_qmax */
-	if (offset <= PCI_MSI_FLAGS && offset + count >= PCI_MSI_FLAGS) {
-		__le16 *flags;
-		int start;
-
-		start = vfio_find_cap_start(vdev, pos);
-
-		flags = (__le16 *)&vdev->vconfig[start];
-
-		*flags &= cpu_to_le16(~PCI_MSI_FLAGS_QMASK);
-		*flags |= cpu_to_le16(vdev->msi_qmax << 1);
-	}
-
-	return vfio_default_config_read(vdev, pos, count, perm, offset, val);
-}
-
-static int vfio_msi_config_write(struct vfio_pci_device *vdev, int pos,
-				 int count, struct perm_bits *perm,
-				 int offset, __le32 val)
-{
-	count = vfio_default_config_write(vdev, pos, count, perm, offset, val);
-	if (count < 0)
-		return count;
-
-	/* Fixup and write configured queue size and enable to hardware */
-	if (offset <= PCI_MSI_FLAGS && offset + count >= PCI_MSI_FLAGS) {
-		__le16 *pflags;
-		u16 flags;
-		int start, ret;
-
-		start = vfio_find_cap_start(vdev, pos);
-
-		pflags = (__le16 *)&vdev->vconfig[start + PCI_MSI_FLAGS];
-
-		flags = le16_to_cpu(*pflags);
-
-		/* MSI is enabled via ioctl */
-		if  (!is_msi(vdev))
-			flags &= ~PCI_MSI_FLAGS_ENABLE;
-
-		/* Check queue size */
-		if ((flags & PCI_MSI_FLAGS_QSIZE) >> 4 > vdev->msi_qmax) {
-			flags &= ~PCI_MSI_FLAGS_QSIZE;
-			flags |= vdev->msi_qmax << 4;
-		}
-
-		/* Write back to virt and to hardware */
-		*pflags = cpu_to_le16(flags);
-		ret = pci_user_write_config_word(vdev->pdev,
-						 start + PCI_MSI_FLAGS,
-						 flags);
-		if (ret)
-			return pcibios_err_to_errno(ret);
-	}
-
-	return count;
-}
-
 /*
  * MSI determination is per-device, so this routine gets used beyond
  * initialization time. Don't add __init
@@ -908,16 +846,9 @@ static int init_pci_cap_msi_perm(struct perm_bits *perm, int len, u16 flags)
 	if (alloc_perm_bits(perm, len))
 		return -ENOMEM;
 
-	perm->readfn = vfio_msi_config_read;
-	perm->writefn = vfio_msi_config_write;
-
 	p_setb(perm, PCI_CAP_LIST_NEXT, (u8)ALL_VIRT, NO_WRITE);
 
-	/*
-	 * The upper byte of the control register is reserved,
-	 * just setup the lower byte.
-	 */
-	p_setb(perm, PCI_MSI_FLAGS, (u8)ALL_VIRT, (u8)ALL_WRITE);
+	p_setw(perm, PCI_MSI_FLAGS, PCI_MSI_FLAGS_QMASK, NO_WRITE);
 	p_setd(perm, PCI_MSI_ADDRESS_LO, ALL_VIRT, ALL_WRITE);
 	if (flags & PCI_MSI_FLAGS_64BIT) {
 		p_setd(perm, PCI_MSI_ADDRESS_HI, ALL_VIRT, ALL_WRITE);
@@ -1452,6 +1383,23 @@ int vfio_config_init(struct vfio_pci_device *vdev)
 	ret = vfio_ecap_init(vdev);
 	if (ret)
 		goto out;
+
+	/*
+	 * It's a common platform restriction to only support a single MSI
+	 * vector.  If this is such a platform, then advertise only a single
+	 * vector through the MSI capability.  This will also be consumed
+	 * when we expose IRQ info through the VFIO interfaces.  The theory
+	 * here is that it's better to virtualize the field to describe what
+	 * we can support and hope the device/driver accommodates than to
+	 * expect retry on something we know we cannot support.
+	 */
+	if (vdev->msi_perm) {
+		int nvec = pci_msi_vec_count(pdev);
+
+		if (nvec > 1 && !pci_msi_supported(pdev, nvec, PCI_CAP_ID_MSI))
+			vdev->vconfig[pdev->msi_cap + PCI_MSI_FLAGS] &=
+							~PCI_MSI_FLAGS_QMASK;
+	}
 
 	return 0;
 

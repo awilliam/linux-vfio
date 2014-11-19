@@ -43,11 +43,10 @@ struct vfio_pci_device {
 	struct vfio_pci_irq_ctx	*ctx;
 	int			num_ctx;
 	int			irq_type;
-	u8			msi_qmax;
-	u8			msix_bar;
-	u16			msix_size;
 	u32			msix_offset;
 	u32			rbar[7];
+	u16			msix_size;
+	u8			msix_bar;
 	bool			pci_2_3;
 	bool			virq_disabled;
 	bool			reset_works;
