@@ -25,6 +25,7 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/vfio.h>
+#include <linux/vgaarb.h>
 
 #include "vfio_pci_private.h"
 
@@ -41,6 +42,14 @@ module_param_named(nointxmask, nointxmask, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(nointxmask,
 		  "Disable support for PCI 2.3 style INTx masking.  If this resolves problems for specific devices, report lspci -vvvxxx to linux-pci@vger.kernel.org so the device can be fixed automatically via the broken_intx_masking flag.");
 
+#ifdef CONFIG_VFIO_PCI_VGA
+static bool vgaoptout;
+module_param_named(vgaoptout, vgaoptout, bool, S_IRUGO);
+MODULE_PARM_DESC(vgaoptout,
+		 "Disable VGA arbitration and VGA region access to VGA-capable devices");
+#else
+static bool vgaoptout = true;
+#endif
 static DEFINE_MUTEX(driver_lock);
 
 static void vfio_pci_try_bus_reset(struct vfio_pci_device *vdev);
@@ -97,10 +106,8 @@ static int vfio_pci_enable(struct vfio_pci_device *vdev)
 	} else
 		vdev->msix_bar = 0xFF;
 
-#ifdef CONFIG_VFIO_PCI_VGA
-	if ((pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+	if (!vgaoptout && (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
 		vdev->has_vga = true;
-#endif
 
 	return 0;
 }
@@ -872,6 +879,9 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		kfree(vdev);
 	}
 
+	if (vgaoptout && (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+		vga_set_legacy_decoding(pdev, VGA_RSRC_NONE);
+
 	return ret;
 }
 
@@ -880,10 +890,14 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 	struct vfio_pci_device *vdev;
 
 	vdev = vfio_del_group_dev(&pdev->dev);
-	if (vdev) {
-		iommu_group_put(pdev->dev.iommu_group);
-		kfree(vdev);
-	}
+	if (!vdev)
+		return;
+
+	iommu_group_put(pdev->dev.iommu_group);
+	kfree(vdev);
+
+	if (vgaoptout && (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
+		vga_set_legacy_decoding(pdev, VGA_RSRC_LEGACY_MASK);
 }
 
 static pci_ers_result_t vfio_pci_aer_err_detected(struct pci_dev *pdev,
