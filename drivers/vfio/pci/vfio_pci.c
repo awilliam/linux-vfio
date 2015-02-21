@@ -68,6 +68,7 @@ static int vfio_pci_enable(struct vfio_pci_device *vdev)
 	if (ret)
 		return ret;
 
+	pci_ignore_hotplug(pdev);
 	vdev->reset_works = (pci_reset_function(pdev) == 0);
 	pci_save_state(pdev);
 	vdev->pci_saved_state = pci_store_saved_state(pdev);
@@ -79,6 +80,7 @@ static int vfio_pci_enable(struct vfio_pci_device *vdev)
 	if (ret) {
 		kfree(vdev->pci_saved_state);
 		vdev->pci_saved_state = NULL;
+		pci_unignore_hotplug(pdev);
 		pci_disable_device(pdev);
 		return ret;
 	}
@@ -172,6 +174,8 @@ out:
 	pci_disable_device(pdev);
 
 	vfio_pci_try_bus_reset(vdev);
+
+	pci_unignore_hotplug(pdev);
 }
 
 static void vfio_pci_release(void *device_data)
