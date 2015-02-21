@@ -1036,6 +1036,11 @@ static inline void pci_ignore_hotplug(struct pci_dev *dev)
 	dev->ignore_hotplug = 1;
 }
 
+static inline void pci_unignore_hotplug(struct pci_dev *dev)
+{
+	dev->ignore_hotplug = 0;
+}
+
 static inline int pci_enable_wake(struct pci_dev *dev, pci_power_t state,
 				  bool enable)
 {
