@@ -61,6 +61,8 @@ static int vfio_pci_enable(struct vfio_pci_device *vdev)
 	u16 cmd;
 	u8 msix_pos;
 
+	pci_set_power_state(pdev, PCI_D0);
+
 	/* Don't allow our initial saved state to include busmaster */
 	pci_clear_master(pdev);
 
@@ -176,6 +178,8 @@ out:
 	vfio_pci_try_bus_reset(vdev);
 
 	pci_unignore_hotplug(pdev);
+
+	pci_set_power_state(pdev, PCI_D3hot);
 }
 
 static void vfio_pci_release(void *device_data)
@@ -880,6 +884,13 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (vgaoptout && (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
 		vga_set_legacy_decoding(pdev, VGA_RSRC_NONE);
 
+	/*
+	 * If we're in D0, this first transition is a no-op, if we're not then
+	 * we first need to transition to D0 before going to D3hot anyway.
+	 */
+	pci_set_power_state(pdev, PCI_D0);
+	pci_set_power_state(pdev, PCI_D3hot);
+
 	return ret;
 }
 
@@ -896,6 +907,8 @@ static void vfio_pci_remove(struct pci_dev *pdev)
 
 	if (vgaoptout && (pdev->class >> 8) == PCI_CLASS_DISPLAY_VGA)
 		vga_set_legacy_decoding(pdev, VGA_RSRC_LEGACY_MASK);
+
+	pci_set_power_state(pdev, PCI_D0);
 }
 
 static pci_ers_result_t vfio_pci_aer_err_detected(struct pci_dev *pdev,
@@ -1017,6 +1030,7 @@ put_devs:
 		if (!ret) {
 			tmp = vfio_device_data(devs.devices[i]);
 			tmp->needs_reset = false;
+			pci_set_power_state(tmp->pdev, PCI_D3hot);
 		}
 		vfio_device_put(devs.devices[i]);
 	}
