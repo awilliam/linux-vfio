@@ -749,6 +749,7 @@ nouveau_pmops_runtime_resume(struct device *dev)
 		return -EINVAL;
 
 	pci_set_power_state(pdev, PCI_D0);
+	pci_unignore_hotplug(pdev);
 	pci_restore_state(pdev);
 	ret = pci_enable_device(pdev);
 	if (ret)

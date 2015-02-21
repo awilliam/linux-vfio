@@ -471,6 +471,7 @@ static int radeon_pmops_runtime_resume(struct device *dev)
 	drm_dev->switch_power_state = DRM_SWITCH_POWER_CHANGING;
 
 	pci_set_power_state(pdev, PCI_D0);
+	pci_unignore_hotplug(pdev);
 	pci_restore_state(pdev);
 	ret = pci_enable_device(pdev);
 	if (ret)
