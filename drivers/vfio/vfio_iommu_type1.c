@@ -59,6 +59,7 @@ struct vfio_iommu {
 	struct rb_root		dma_list;
 	bool			v2;
 	bool			nesting;
+	bool			dying;
 };
 
 struct vfio_domain {
@@ -336,8 +337,10 @@ static long vfio_unpin_pages(unsigned long pfn, long npage,
 static void vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma)
 {
 	dma_addr_t iova = dma->iova, end = dma->iova + dma->size;
+unsigned long vaddr = dma->vaddr;
 	struct vfio_domain *domain, *d;
 	long unlocked = 0;
+struct page *page[1];
 
 	if (!dma->size)
 		return;
@@ -363,8 +366,19 @@ static void vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma)
 		phys = iommu_iova_to_phys(domain->domain, iova);
 		if (WARN_ON(!phys)) {
 			iova += PAGE_SIZE;
+vaddr += PAGE_SIZE;
 			continue;
 		}
+
+if (!iommu->dying &&
+    get_user_pages_fast(vaddr, 1,
+			!!(dma->prot & IOMMU_WRITE), page) == 1) {
+	if (phys != page_to_pfn(page[0]) << PAGE_SHIFT)
+		pr_warn_ratelimited("%s: Expected %016lx, got %016lx\n",
+				    __func__, (unsigned long)phys,
+				    page_to_pfn(page[0]) << PAGE_SHIFT);
+	put_page(page[0]);
+}
 
 		/*
 		 * To optimize for fewer iommu_unmap() calls, each of which
@@ -374,6 +388,15 @@ static void vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma)
 		for (len = PAGE_SIZE;
 		     !domain->fgsp && iova + len < end; len += PAGE_SIZE) {
 			next = iommu_iova_to_phys(domain->domain, iova + len);
+if (!iommu->dying &&
+    get_user_pages_fast(vaddr + len, 1,
+			!!(dma->prot & IOMMU_WRITE), page) == 1) {
+	if (next != page_to_pfn(page[0]) << PAGE_SHIFT)
+		pr_warn_ratelimited("%s: Expected %016lx, got %016lx\n",
+				    __func__, (unsigned long)next,
+				    page_to_pfn(page[0]) << PAGE_SHIFT);
+	put_page(page[0]);
+}
 			if (next != phys + len)
 				break;
 		}
@@ -386,6 +409,7 @@ static void vfio_unmap_unpin(struct vfio_iommu *iommu, struct vfio_dma *dma)
 					     unmapped >> PAGE_SHIFT,
 					     dma->prot, false);
 		iova += unmapped;
+vaddr += unmapped;
 
 		cond_resched();
 	}
@@ -854,6 +878,8 @@ out_free:
 static void vfio_iommu_unmap_unpin_all(struct vfio_iommu *iommu)
 {
 	struct rb_node *node;
+
+iommu->dying = true;
 
 	while ((node = rb_first(&iommu->dma_list)))
 		vfio_remove_dma(iommu, rb_entry(node, struct vfio_dma, node));
