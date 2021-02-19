@@ -657,6 +657,7 @@ int vfio_platform_probe_common(struct vfio_platform_device *vdev,
 			       struct device *dev)
 {
 	struct iommu_group *group;
+	struct vfio_device *device;
 	int ret;
 
 	if (!vdev)
@@ -685,9 +686,11 @@ int vfio_platform_probe_common(struct vfio_platform_device *vdev,
 		goto put_reset;
 	}
 
-	ret = vfio_add_group_dev(dev, &vfio_platform_ops, vdev);
-	if (ret)
+	device = vfio_add_group_dev(dev, &vfio_platform_ops, vdev);
+	if (IS_ERR(device)) {
+		ret = PTR_ERR(device);
 		goto put_iommu;
+	}
 
 	mutex_init(&vdev->igate);
 

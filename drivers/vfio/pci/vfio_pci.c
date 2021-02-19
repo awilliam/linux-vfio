@@ -1926,6 +1926,7 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct vfio_pci_device *vdev;
 	struct iommu_group *group;
+	struct vfio_device *device;
 	int ret;
 
 	if (vfio_pci_is_denylisted(pdev))
@@ -1968,9 +1969,11 @@ static int vfio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	INIT_LIST_HEAD(&vdev->vma_list);
 	init_rwsem(&vdev->memory_lock);
 
-	ret = vfio_add_group_dev(&pdev->dev, &vfio_pci_ops, vdev);
-	if (ret)
+	device = vfio_add_group_dev(&pdev->dev, &vfio_pci_ops, vdev);
+	if (IS_ERR(device)) {
+		ret = PTR_ERR(device);
 		goto out_free;
+	}
 
 	ret = vfio_pci_reflck_attach(vdev);
 	if (ret)

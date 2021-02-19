@@ -848,8 +848,9 @@ static int vfio_iommu_group_notifier(struct notifier_block *nb,
 /**
  * VFIO driver API
  */
-int vfio_add_group_dev(struct device *dev,
-		       const struct vfio_device_ops *ops, void *device_data)
+struct vfio_device *vfio_add_group_dev(struct device *dev,
+				       const struct vfio_device_ops *ops,
+				       void *device_data)
 {
 	struct iommu_group *iommu_group;
 	struct vfio_group *group;
@@ -857,14 +858,14 @@ int vfio_add_group_dev(struct device *dev,
 
 	iommu_group = iommu_group_get(dev);
 	if (!iommu_group)
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 
 	group = vfio_group_get_from_iommu(iommu_group);
 	if (!group) {
 		group = vfio_create_group(iommu_group);
 		if (IS_ERR(group)) {
 			iommu_group_put(iommu_group);
-			return PTR_ERR(group);
+			return (struct vfio_device *)group;
 		}
 	} else {
 		/*
@@ -880,23 +881,19 @@ int vfio_add_group_dev(struct device *dev,
 			 iommu_group_id(iommu_group));
 		vfio_device_put(device);
 		vfio_group_put(group);
-		return -EBUSY;
+		return ERR_PTR(-EBUSY);
 	}
 
 	device = vfio_group_create_device(group, dev, ops, device_data);
-	if (IS_ERR(device)) {
-		vfio_group_put(group);
-		return PTR_ERR(device);
-	}
 
 	/*
-	 * Drop all but the vfio_device reference.  The vfio_device holds
-	 * a reference to the vfio_group, which holds a reference to the
-	 * iommu_group.
+	 * Drop all but the vfio_device reference.  The vfio_device, if
+	 * !IS_ERR() holds a reference to the vfio_group, which holds a
+	 * reference to the iommu_group.
 	 */
 	vfio_group_put(group);
 
-	return 0;
+	return device;
 }
 EXPORT_SYMBOL_GPL(vfio_add_group_dev);
 

@@ -592,6 +592,7 @@ static int vfio_fsl_mc_probe(struct fsl_mc_device *mc_dev)
 	struct iommu_group *group;
 	struct vfio_fsl_mc_device *vdev;
 	struct device *dev = &mc_dev->dev;
+	struct vfio_device *device;
 	int ret;
 
 	group = vfio_iommu_group_get(dev);
@@ -608,8 +609,9 @@ static int vfio_fsl_mc_probe(struct fsl_mc_device *mc_dev)
 
 	vdev->mc_dev = mc_dev;
 
-	ret = vfio_add_group_dev(dev, &vfio_fsl_mc_ops, vdev);
-	if (ret) {
+	device = vfio_add_group_dev(dev, &vfio_fsl_mc_ops, vdev);
+	if (IS_ERR(device)) {
+		ret = PTR_ERR(device);
 		dev_err(dev, "VFIO_FSL_MC: Failed to add to vfio group\n");
 		goto out_group_put;
 	}

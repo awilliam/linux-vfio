@@ -124,8 +124,11 @@ static const struct vfio_device_ops vfio_mdev_dev_ops = {
 static int vfio_mdev_probe(struct device *dev)
 {
 	struct mdev_device *mdev = to_mdev_device(dev);
+	struct vfio_device *device;
 
-	return vfio_add_group_dev(dev, &vfio_mdev_dev_ops, mdev);
+	device = vfio_add_group_dev(dev, &vfio_mdev_dev_ops, mdev);
+
+	return IS_ERR(device) ? PTR_ERR(device) : 0;
 }
 
 static void vfio_mdev_remove(struct device *dev)
