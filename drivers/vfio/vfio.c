@@ -565,6 +565,13 @@ static struct inode *vfio_fs_inode_new(void)
 	return inode;
 }
 
+void vfio_device_unmap_mapping_range(struct vfio_device *device,
+				     loff_t start, loff_t len)
+{
+	unmap_mapping_range(device->inode->i_mapping, start, len, true);
+}
+EXPORT_SYMBOL_GPL(vfio_device_unmap_mapping_range);
+
 /**
  * Device objects - create, release, get, put, search
  */

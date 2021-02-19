@@ -56,6 +56,8 @@ extern void *vfio_del_group_dev(struct device *dev);
 extern struct vfio_device *vfio_device_get_from_dev(struct device *dev);
 extern void vfio_device_put(struct vfio_device *device);
 extern void *vfio_device_data(struct vfio_device *device);
+extern void vfio_device_unmap_mapping_range(struct vfio_device *device,
+					    loff_t start, loff_t len);
 
 /* events for the backend driver notify callback */
 enum vfio_iommu_notify_type {
