@@ -127,7 +127,6 @@ struct serial_port {
 /* State of each mdev device */
 struct mdev_state {
 	struct vfio_device vdev;
-	int irq_fd;
 	struct eventfd_ctx *intx_evtfd;
 	struct eventfd_ctx *msi_evtfd;
 	int irq_index;
@@ -938,8 +937,10 @@ static int mtty_set_irqs(struct mdev_state *mdev_state, uint32_t flags,
 		{
 			if (flags & VFIO_IRQ_SET_DATA_NONE) {
 				pr_info("%s: disable INTx\n", __func__);
-				if (mdev_state->intx_evtfd)
+				if (mdev_state->intx_evtfd) {
 					eventfd_ctx_put(mdev_state->intx_evtfd);
+					mdev_state->intx_evtfd = NULL;
+				}
 				break;
 			}
 
@@ -955,7 +956,6 @@ static int mtty_set_irqs(struct mdev_state *mdev_state, uint32_t flags,
 						break;
 					}
 					mdev_state->intx_evtfd = evt;
-					mdev_state->irq_fd = fd;
 					mdev_state->irq_index = index;
 					break;
 				}
@@ -971,8 +971,10 @@ static int mtty_set_irqs(struct mdev_state *mdev_state, uint32_t flags,
 			break;
 		case VFIO_IRQ_SET_ACTION_TRIGGER:
 			if (flags & VFIO_IRQ_SET_DATA_NONE) {
-				if (mdev_state->msi_evtfd)
+				if (mdev_state->msi_evtfd) {
 					eventfd_ctx_put(mdev_state->msi_evtfd);
+					mdev_state->msi_evtfd = NULL;
+				}
 				pr_info("%s: disable MSI\n", __func__);
 				mdev_state->irq_index = VFIO_PCI_INTX_IRQ_INDEX;
 				break;
@@ -993,7 +995,6 @@ static int mtty_set_irqs(struct mdev_state *mdev_state, uint32_t flags,
 					break;
 				}
 				mdev_state->msi_evtfd = evt;
-				mdev_state->irq_fd = fd;
 				mdev_state->irq_index = index;
 			}
 			break;
@@ -1262,6 +1263,22 @@ static unsigned int mtty_get_available(struct mdev_type *mtype)
 	return atomic_read(&mdev_avail_ports) / type->nr_ports;
 }
 
+static void mtty_close(struct vfio_device *vdev)
+{
+	struct mdev_state *mdev_state =
+		container_of(vdev, struct mdev_state, vdev);
+
+	if (mdev_state->intx_evtfd) {
+		eventfd_ctx_put(mdev_state->intx_evtfd);
+		mdev_state->intx_evtfd = NULL;
+	}
+	if (mdev_state->msi_evtfd) {
+		eventfd_ctx_put(mdev_state->msi_evtfd);
+		mdev_state->msi_evtfd = NULL;
+	}
+	mdev_state->irq_index = -1;
+}
+
 static const struct vfio_device_ops mtty_dev_ops = {
 	.name = "vfio-mtty",
 	.init = mtty_init_dev,
@@ -1273,6 +1290,7 @@ static const struct vfio_device_ops mtty_dev_ops = {
 	.unbind_iommufd	= vfio_iommufd_emulated_unbind,
 	.attach_ioas	= vfio_iommufd_emulated_attach_ioas,
 	.detach_ioas	= vfio_iommufd_emulated_detach_ioas,
+	.close_device	= mtty_close,
 };
 
 static struct mdev_driver mtty_driver = {
