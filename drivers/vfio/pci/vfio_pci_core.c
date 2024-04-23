@@ -1674,7 +1674,8 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	struct pci_dev *pdev = vdev->pdev;
 	unsigned int index;
 	u64 phys_len, req_len, pgoff, req_start;
-	int ret;
+	unsigned long pfn;
+	int ret = 0;
 
 	index = vma->vm_pgoff >> (VFIO_PCI_OFFSET_SHIFT - PAGE_SHIFT);
 
@@ -1727,9 +1728,9 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	vma->vm_private_data = vdev;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	vma->vm_page_prot = pgprot_decrypted(vma->vm_page_prot);
+	vma->vm_ops = &vfio_pci_mmap_ops;
 
-	/* Set flags as they would be if using remap_pfn_range()
-	 *
+	/*
 	 * VM_ALLOW_ANY_UNCACHED: The VMA flag is implemented for ARM64,
 	 * allowing KVM stage 2 device mapping attributes to use Normal-NC
 	 * rather than DEVICE_nGnRE, which allows guest mappings
@@ -1746,11 +1747,35 @@ int vfio_pci_core_mmap(struct vfio_device *core_vdev, struct vm_area_struct *vma
 	 * PCI IP is integrated. Hence VM_ALLOW_ANY_UNCACHED is set in
 	 * the VMA flags.
 	 */
-	vm_flags_set(vma, VM_ALLOW_ANY_UNCACHED | VM_IO | VM_PFNMAP |
-			VM_DONTEXPAND | VM_DONTDUMP);
-	vma->vm_ops = &vfio_pci_mmap_ops;
+	vm_flags_set(vma, VM_ALLOW_ANY_UNCACHED);
 
-	return 0;
+	/*
+	 * pfn is used in the remap_pfn_range() case below and recalculated
+	 * in the fault case, so we might as well validated it here for both.
+	 */
+	ret = vma_to_pfn(vma, &pfn);
+	if (ret)
+		return ret;
+
+	down_read(&vdev->memory_lock);
+
+	/*
+	 * Insert mapping now if MMIO enabled, otherwise fault it in on use.
+	 * vm_page_prot includes pgprot_decrypted() above for the fault case
+	 * therefore remap_pfn_range() is equivalent to io_remap_pfn_range()
+	 * here.  Flags are set to mirror the remap_pfn_range() case when
+	 * deferring to fault handling.
+	 */
+	if (!vdev->pm_runtime_engaged && __vfio_pci_memory_enabled(vdev))
+		ret = remap_pfn_range(vma, vma->vm_start, pfn,
+				      req_len, vma->vm_page_prot);
+	else
+		vm_flags_set(vma, VM_IO | VM_PFNMAP |
+				  VM_DONTEXPAND | VM_DONTDUMP);
+
+	up_read(&vdev->memory_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(vfio_pci_core_mmap);
 
